@@ -19,6 +19,7 @@ WARMUP = int(os.environ.get("WARMUP", 0))
 def run_query(q):
     """Send one query via stream-chat; return (wall_sec, ttft_sec_or_None, n_sources, ok)."""
     t0 = time.time()
+    t_close = None
     ttft_sec = None
     n_sources = None
     ok = False
@@ -45,17 +46,20 @@ def run_query(q):
                 if ev.get("error"):
                     print(f"  ALLM error: {ev.get('error')}")
                     ok = False
-                # AnythingLLM emits the retrieved context chunks in a `sources` array
+                # AnythingLLM emits the retrieved context chunks in a `sources`
+                # array on the FINAL event, which arrives after the first
+                # close=true chunk — so don't break on close; record the close
+                # time and keep reading until the server ends the stream.
                 if isinstance(ev.get("sources"), list) and ev["sources"]:
                     n_sources = len(ev["sources"])
                 if ttft_sec is None and ev.get("textResponse"):
                     ttft_sec = time.time() - t0
-                if ev.get("close"):
-                    break
+                if ev.get("close") and t_close is None:
+                    t_close = time.time()
     except Exception as e:
         ok = False
         print(f"  ERROR: {e}")
-    return time.time() - t0, ttft_sec, n_sources, ok
+    return (t_close or time.time()) - t0, ttft_sec, n_sources, ok
 
 def snap(tag):
     out = {}
