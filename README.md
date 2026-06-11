@@ -119,6 +119,37 @@ clean), and grade the answer with an LLM judge afterwards.
 LiteLLM + Prometheus also expose aggregate token-usage and TTFT metrics at
 `http://localhost:9090` (Prometheus) for dashboards.
 
+## ZenDNN A/B benchmark (optional)
+
+Compare a **baseline** vs a **ZenDNN** llama.cpp chat backend on the *same* RAG
+pipeline (identical model, documents, and queries) and get a baseline-vs-zendnn
+report with per-stage latency, inference throughput (prefill/decode t/s), and
+speedup ratios.
+
+```bash
+./setup.sh && make ingest      # stack up + documents ingested
+make ab                        # baseline job, then zendnn job, then report_ab
+```
+
+`run_ab.sh` swaps only the `llama-chat` backend between jobs and runs them
+**strictly sequentially** — one chat server at a time — so they never compete
+for CPU and the numbers stay clean. It writes `data/results/report_ab.{md,json}`.
+
+How the two backends are provided (configurable in `.env`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AB_BASELINE_BINDIR` | `./llama.cpp/build/bin` | Host dir with a baseline `llama-server` (no ZenDNN) |
+| `AB_ZENDNN_BINDIR` | `./llama.cpp/build_zendnn/bin` | Host dir with a ZenDNN-enabled `llama-server` |
+| `AB_ZENDNN_LIBDIR` | _(ZenDNN install lib)_ | Dir with `libzendnnl.so`, added to `LD_LIBRARY_PATH` for the zendnn job |
+| `AB_ZENDNN_ALGO` | `1` | `ZENDNNL_MATMUL_ALGO` value for the zendnn job |
+
+Each job mounts its build tree into the runtime image
+(`docker-compose.ab.yml`) and runs that binary — so baseline and zendnn differ
+only in the llama.cpp backend. `CHAT_MODEL_PATH` must point at a local GGUF (the
+A/B uses your real model, since ZenDNN targets matmul-bound prefill). A sample
+A/B report is in [`reports/`](reports/).
+
 ## Dataset notes
 
 - **Documents** come from `BeIR/nq` (Google NQ Wikipedia passages).

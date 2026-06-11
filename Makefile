@@ -12,6 +12,7 @@ help:
 	@echo "  make evaluate     run queries against AnythingLLM + LLM judge"
 	@echo "  make report       generate results/report.md + report.json"
 	@echo "  make all          ingest + evaluate + report"
+	@echo "  make ab           ZenDNN A/B: baseline vs zendnn (sequential) + report"
 	@echo "  make up | down | logs | ps    stack lifecycle"
 	@echo "  make save-images / load-images   export/import images for git-lfs"
 	@echo "  make clean        remove generated data/results (keeps volumes)"
@@ -45,6 +46,12 @@ report: build
 	$(RUN) report.py
 
 all: ingest evaluate report
+
+ab: build
+	./run_ab.sh
+
+report-ab: build
+	$(RUN) report_ab.py
 
 save-images:
 	./scripts/save_images.sh

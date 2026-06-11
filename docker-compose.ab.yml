@@ -1,0 +1,29 @@
+# ZenDNN A/B overlay. Used by run_ab.sh as:
+#   docker compose -f docker-compose.yml -f docker-compose.ab.yml ...
+#
+# It reconfigures `llama-chat` to run a host-built llama-server binary (mounted
+# from a build tree) inside the same runtime image, so a baseline build and a
+# ZenDNN build can be swapped per job while everything else stays identical.
+# The base stack (embed/litellm/prometheus/anythingllm/harness) is unchanged.
+services:
+  llama-chat:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}   # runtime only
+    # Pin the chat server to one NUMA node (set CHAT_CPUSET, e.g. "96-191") so
+    # decode isn't starved by cross-node memory traffic — essential for a fair
+    # ZenDNN A/B on a multi-socket box. Empty = no pinning.
+    cpuset: ${CHAT_CPUSET:-}
+    environment:
+      ZENDNNL_MATMUL_ALGO: ${ZENDNNL_MATMUL_ALGO:-}
+      AB_JOB: ${AB_JOB:-}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        export LD_LIBRARY_PATH=/opt/llama/bin:/opt/llama/lib:$$LD_LIBRARY_PATH
+        ARGS="--host 0.0.0.0 --port 8080 --ctx-size $$CHAT_CTX --batch-size $$CHAT_BATCH --ubatch-size $$CHAT_UBATCH --n-gpu-layers $$CHAT_NGL --parallel $$CHAT_PARALLEL --metrics --alias chat-model --model $$CHAT_MODEL_PATH"
+        if [ -n "$$CHAT_THREADS" ]; then ARGS="$$ARGS --threads $$CHAT_THREADS"; fi
+        ARGS="$$ARGS $$CHAT_EXTRA_FLAGS"
+        echo "[llama-chat AB job=$${AB_JOB:-?} algo=$${ZENDNNL_MATMUL_ALGO:-unset}] /opt/llama/bin/llama-server $$ARGS"
+        exec /opt/llama/bin/llama-server $$ARGS
+    volumes:
+      - ${CHAT_BINDIR:?set CHAT_BINDIR (host llama-server build/bin dir)}:/opt/llama/bin:ro
+      - ${CHAT_LIBDIR:-${CHAT_BINDIR}}:/opt/llama/lib:ro

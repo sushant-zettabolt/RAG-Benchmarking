@@ -27,6 +27,10 @@ JUDGE_MODEL    = os.environ.get("JUDGE_MODEL", "chat-model")
 JUDGE_THRESH   = C.envf("JUDGE_THRESHOLD", 0.5)
 WARMUP         = C.envi("WARMUP", 1)
 EVAL_LIMIT     = C.envi("EVAL_LIMIT", 0)
+# Optional A/B job tag (e.g. "baseline" / "zendnn"). When set, results are
+# written to metrics_<JOB>.jsonl so report_ab.py can compare two runs.
+JOB            = os.environ.get("JOB", "").strip()
+TAG            = f"_{JOB}" if JOB else ""
 
 # llama.cpp counter names (Prometheus text exposition)
 M_PROMPT_TOK   = "llamacpp:prompt_tokens_total"
@@ -82,6 +86,9 @@ def run_one(q, do_judge=True):
         "prefill_s": prefill_s,
         "decode_s": decode_s,
         "llm_s": (prefill_s + decode_s) if (prefill_s is not None and decode_s is not None) else None,
+        # throughput (tokens/sec) — the headline ZenDNN A/B numbers
+        "prefill_tps": (p_tok / prefill_s) if (p_tok and prefill_s) else None,
+        "decode_tps": (g_tok / decode_s) if (g_tok and decode_s) else None,
         "prompt_tokens": int(p_tok) if p_tok is not None else None,
         "completion_tokens": int(g_tok) if g_tok is not None else None,
         "total_tokens": int((p_tok or 0) + (g_tok or 0)) if (p_tok is not None or g_tok is not None) else None,
@@ -109,7 +116,8 @@ def main():
         raise SystemExit(f"{C.EVAL_FILE} not found — run ingest.py first.")
 
     questions = load_questions()
-    print(f"[eval] {len(questions)} questions, mode={QUERY_MODE}, judge={JUDGE_MODEL}, warmup={WARMUP}")
+    print(f"[eval{TAG}] {len(questions)} questions, mode={QUERY_MODE}, "
+          f"judge={JUDGE_MODEL}, warmup={WARMUP}, job={JOB or '(none)'}")
 
     # warmup — excluded from results (absorbs model-load / cache-fill)
     for w in range(min(WARMUP, len(questions))):
@@ -118,7 +126,7 @@ def main():
 
     t_job = time.time()
     records = []
-    with open(os.path.join(C.RESULTS_DIR, "metrics.jsonl"), "w") as fh:
+    with open(os.path.join(C.RESULTS_DIR, f"metrics{TAG}.jsonl"), "w") as fh:
         for i, q in enumerate(questions, 1):
             rec = run_one(q)
             records.append(rec)
@@ -142,15 +150,16 @@ def main():
         "judge_threshold": JUDGE_THRESH,
         "warmup": WARMUP,
     }
-    with open(os.path.join(C.RESULTS_DIR, "results.json"), "w") as f:
+    summary["job"] = JOB or None
+    with open(os.path.join(C.RESULTS_DIR, f"results{TAG}.json"), "w") as f:
         json.dump({"summary": summary, "records": records}, f, indent=2)
 
     n_ok = sum(1 for r in records if r["ok"])
     n_match = sum(1 for r in records if r["match"])
-    print(f"\n[eval] done in {job_wall:.1f}s  ok={n_ok}/{len(records)}  "
+    print(f"\n[eval{TAG}] done in {job_wall:.1f}s  ok={n_ok}/{len(records)}  "
           f"matched={n_match}/{len(records)}")
-    print(f"[eval] per-query metrics -> {C.RESULTS_DIR}/metrics.jsonl")
-    print(f"[eval] raw results       -> {C.RESULTS_DIR}/results.json")
+    print(f"[eval{TAG}] per-query metrics -> {C.RESULTS_DIR}/metrics{TAG}.jsonl")
+    print(f"[eval{TAG}] raw results       -> {C.RESULTS_DIR}/results{TAG}.json")
 
 
 if __name__ == "__main__":
