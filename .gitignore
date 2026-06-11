@@ -1,0 +1,23 @@
+# machine-specific config (copy of config.env.example)
+config.env
+
+# llama.cpp source/builds — separate repo, see scripts/build_llama.sh
+llama.cpp/
+llama.cpp
+
+# generated artifacts
+results/
+results_old/
+data/
+allm_storage/
+
+# rendered conf (generated from conf/*.tpl by scripts/lib.sh render_conf)
+conf/litellm.yaml
+conf/prometheus.yml
+conf/anythingllm.env
+
+# runtime droppings
+*.log
+*.pid
+__pycache__/
+*.pyc
