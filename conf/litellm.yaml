@@ -1,0 +1,24 @@
+model_list:
+  - model_name: chat-model
+    litellm_params:
+      model: openai/chat-model
+      api_base: http://llama-chat:8080/v1
+      api_key: "sk-noauth"
+  - model_name: embed-model
+    litellm_params:
+      model: openai/embed-model
+      api_base: http://llama-embed:8080/v1
+      api_key: "sk-noauth"
+    # REQUIRED: without mode: embedding LiteLLM health-probes this endpoint with a
+    # chat completion, flags it unhealthy, and AnythingLLM then silently returns
+    # empty answers (textResponse=None).
+    model_info:
+      mode: embedding
+
+litellm_settings:
+  callbacks: ["prometheus"]
+  drop_params: true
+  require_auth_for_metrics_endpoint: false
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"

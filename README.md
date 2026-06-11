@@ -1,104 +1,168 @@
-# RAG Pipeline Benchmark — ZenDNN vs baseline llama.cpp
+# Local RAG Evaluation Stack — AnythingLLM + llama.cpp + Google NQ
 
-End-to-end RAG benchmark that A/B-compares a **baseline** llama.cpp build
-against a **ZenDNN**-enabled build on the *same* full pipeline:
+A fully containerized, reproducible RAG evaluation pipeline. Everything runs in
+Docker — including the LLM and embedding servers — so the only host requirement
+is **Docker + Docker Compose**. One `docker compose up` starts the stack; three
+commands ingest Google Natural Questions, evaluate, and produce a report.
 
 ```
-harness.py ──► AnythingLLM ──► LiteLLM ──► llama-server (chat :8081 / embed :8082)
-                  │ (LanceDB vector search)      │
-                  └──────── Prometheus ◄─────────┘  (per-model latency + TTFT)
+        ┌─────────────┐   embed   ┌──────────────┐
+        │ llama-embed │◀──────────│              │
+        │ (llama.cpp) │           │   LiteLLM    │   OpenAI-compatible proxy
+        └─────────────┘           │   (proxy +   │   (token usage + TTFT metrics)
+        ┌─────────────┐   chat    │  Prometheus  │
+        │ llama-chat  │◀──────────│   metrics)   │
+        │ (llama.cpp) │           └──────┬───────┘
+        └─────────────┘                  │ /v1
+                                  ┌───────▼───────┐        ┌────────────┐
+                                  │  AnythingLLM  │◀───────│  harness   │
+                                  │ (RAG app +    │ HTTP   │ ingest /   │
+                                  │  LanceDB)     │        │ evaluate / │
+                                  └───────────────┘        │ report     │
+                                                           └────────────┘
 ```
 
-Each query is a real RAG round-trip: embed the query → vector search →
-augment the prompt with retrieved chunks → stream the chat completion. The
-report breaks end-to-end latency into embed / prefill / decode / residual,
-with token counts, throughput, and retrieved-chunk stats per query.
+## Prerequisites
+
+- Docker Engine + Docker Compose v2 (`docker compose version`)
+- ~6 GB disk for images + the default small models
+- Internet access on first run (pulls images, models, and the NQ dataset).
+  For air-gapped machines see **Shipping images via git-lfs** below.
 
 ## Quick start
 
 ```bash
-git clone <this-repo> && cd rag_pipeline_bench
-cp config.env.example config.env    # edit for your machine (see below)
-./setup.sh                          # build, start stack, download + ingest corpus
-./run_bench.sh                      # baseline job, zendnn job, then the report
+cp .env.example .env        # optional: edit models/ports/sizes
+./setup.sh                  # start stack + seed AnythingLLM (first run downloads models)
+make ingest                 # download Google NQ + ingest 100 documents
+make evaluate               # run queries against AnythingLLM + LLM-as-judge
+make report                 # write results/report.md + results/report.json
 ```
 
-The report lands in `results/REPORT_<STAMP>.md`.
+`make all` runs ingest → evaluate → report in sequence. Outputs land in
+`./data/` (bind-mounted into the harness container):
 
-## Requirements
+```
+data/
+  docs/                 ingested document files
+  eval.jsonl            questions + reference answers
+  ingest_metadata.json  ingestion status / failures
+  results/
+    metrics.jsonl       one structured record per query
+    results.json        raw results + run summary
+    report.md           human-readable report
+    report.json         machine-readable report
+```
 
-- AMD EPYC (or any x86_64) Linux box; NUMA pinning optional but recommended
-- `python3`, `docker` (daemon access), `cmake` + C++ toolchain, `git`,
-  `curl`, `envsubst` (gettext), `numactl` (only if you use CPU binding)
-- A llama.cpp checkout **containing the ZenDNN backend**
-  (`ggml/src/ggml-zendnn/`) — this is a separate repo/fork, not part of
-  this one. Point `LLAMA_SRC` at it (or set `LLAMA_REPO` to let
-  `scripts/build_llama.sh` clone it).
-- A ZenDNN install prefix (`ZENDNN_ROOT`) for the ZenDNN build
-- Two GGUF models: a chat model and an embedding model
-- python packages `requests`, `datasets`, `litellm[proxy]` —
-  `setup.sh` installs any that are missing
+A pre-generated example lives in [`reports/`](reports/).
 
-## Configuration (`config.env`)
+## Configuration (`.env`)
 
-Everything machine-specific lives in `config.env` (gitignored). The
-important knobs:
+Everything is configurable through `.env` — nothing is hardcoded.
 
-| Variable | What it is |
-|---|---|
-| `LLAMA_SRC`, `LLAMA_REPO`, `LLAMA_REF` | llama.cpp source path, or git URL+ref to clone |
-| `ZENDNN_ROOT` | ZenDNN install prefix (`-DZENDNN_ROOT`); empty ⇒ baseline-only |
-| `ZENDNN_ENV` | env applied to the zendnn job (default `ZENDNNL_MATMUL_ALGO=1`) |
-| `CHAT_MODEL`, `EMBED_MODEL` | GGUF paths |
-| `CHAT_CPUS`/`CHAT_MEMBIND`, `EMBED_CPUS`/`EMBED_MEMBIND` | numactl binding per server; empty ⇒ no numactl |
-| `THREADS`, `CHAT_CTX`, `*_BATCH`, `*_UBATCH`, `EXTRA_LLAMA_FLAGS` | llama-server tuning |
-| `CHAT_PORT`, `EMBED_PORT`, `LITELLM_PORT`, `PROM_PORT`, `ALLM_PORT` | ports |
-| `CORPUS_N`, `QUERIES_N` | NQ corpus/query sizes (setup, once) |
-| `WARMUP`, `BENCH_QUERIES`, `DROP_FIRST` | benchmark warmups, query cap, report Q1 drop |
+| Variable | Default | Meaning |
+|---|---|---|
+| `CHAT_HF_REPO` / `CHAT_HF_FILE` | `unsloth/Llama-3.2-1B-Instruct-GGUF` / `…BF16.gguf` | Chat model (auto-downloaded) |
+| `EMBED_HF_REPO` / `EMBED_HF_FILE` | `nomic-ai/nomic-embed-text-v1.5-GGUF` / `…f16.gguf` | Embedding model |
+| `CHAT_MODEL_PATH` / `EMBED_MODEL_PATH` | _empty_ | Use a LOCAL GGUF (mounted from `MODELS_DIR`) instead of HF download |
+| `MODELS_DIR` | `./models` | Host dir mounted read-only at `/models` |
+| `CHAT_CTX` / `CHAT_BATCH` / `CHAT_UBATCH` | `8192` / `512` / `512` | Chat context & batch sizes |
+| `EMBED_CTX` / `EMBED_BATCH` / `EMBED_UBATCH` | `2048` | Embed context & batch (keep batch ≥ ctx) |
+| `CHAT_NGL` / `EMBED_NGL` | `0` | GPU layers to offload (0 = CPU). See **GPU** below |
+| `CHAT_THREADS` / `EMBED_THREADS` | _empty_ | CPU threads (empty = auto) |
+| `CHAT_EXTRA_FLAGS` | _empty_ | Extra llama-server flags, e.g. `--flash-attn on` |
+| `*_PORT` | 8081/8082/4000/9090/3001 | Host ports for chat/embed/litellm/prometheus/anythingllm |
+| `DOC_N` | `100` | Documents to ingest |
+| `EVAL_N` | `100` | Eval questions to draw |
+| `EVAL_LIMIT` | _empty_ | Cap measured queries (smoke tests) |
+| `CORPUS_SCAN` | `20000` | Passages scanned to find answer-bearing documents |
+| `JUDGE_MODEL` | `chat-model` | Model used as LLM judge |
+| `JUDGE_THRESHOLD` | `0.5` | Judge score ≥ threshold counts as a match |
+| `WARMUP` | `1` | Leading warmup queries excluded from the report |
 
-On a 2-NUMA-node machine, pin chat and embed to different nodes (the
-defaults pin chat to node 1, embed to node 0) so they never compete for
-cores or memory bandwidth. On a non-NUMA machine just clear the `*_CPUS`
-variables.
+### Models
 
-## Scripts
+By default llama.cpp auto-downloads small GGUFs from Hugging Face on first boot
+(cached in the `llama-cache` volume). To use your own local models:
 
-| Script | What it does |
-|---|---|
-| `./setup.sh` | One-shot: deps → build both llama-servers → start stack → init AnythingLLM (API key + provider settings in SQLite) → download NQ corpus → ingest → gate-check one RAG query. Idempotent. |
-| `./run_bench.sh [ab\|baseline\|zendnn]` | The benchmark. For each job: swaps embed+chat servers to that build, gate-checks ZenDNN engagement/contamination, replays the queries through AnythingLLM, then generates the report. |
-| `./start_services.sh <baseline\|zendnn>` | Bring up the whole stack for one build (embed, chat, LiteLLM, Prometheus, AnythingLLM) with health checks. |
-| `./stop_all.sh` | Stop everything (keeps `allm_storage/` and `results/`). |
-| `scripts/build_llama.sh` | Builds `build/` (baseline) and `build_zendnn/` from `LLAMA_SRC`; verifies the zendnn binary links `libzendnnl`. `FORCE_BUILD=1` to rebuild. |
-| `scripts/start_{chat,embed,litellm,prometheus,anythingllm}.sh` | Individual service starters (all config-driven). |
-| `scripts/init_anythingllm.sh` | First-time AnythingLLM DB seeding (idempotent). |
+```dotenv
+MODELS_DIR=/scratch/models/gguf
+CHAT_MODEL_PATH=/models/Llama-3.1-8B-Instruct-BF16.gguf
+EMBED_MODEL_PATH=/models/nomic-embed-text-v1.5.f32.gguf
+```
 
-Python entry points (all configured via env vars, no hardcoded values):
-`prepare_data.py` (NQ download), `ingest.py` (upload+embed corpus),
-`harness.py` (query replay + Prometheus snapshots), `report.py` (the
-report; `BASE=... STAMP=... DROP_FIRST=1 python3 report.py` regenerates
-one any time).
+### GPU
+
+The default image is CPU-only. For NVIDIA GPUs set
+`LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda`, set `CHAT_NGL`/`EMBED_NGL`
+> 0, and add a `deploy.resources.reservations.devices` GPU reservation to the
+`llama-chat`/`llama-embed` services (requires nvidia-container-toolkit).
 
 ## What gets measured
 
-| Stage | Source |
+Per query we snapshot the llama.cpp `/metrics` counters on the chat and embed
+servers before/after the AnythingLLM call (queries run serially, so deltas are
+clean), and grade the answer with an LLM judge afterwards.
+
+| Metric | Source |
 |---|---|
-| End-to-end wall + client TTFT | harness.py (`/stream-chat` SSE) |
-| Retrieved chunks per query | SSE `sources` array |
-| Prompt/generated token counts, prefill/decode time & t/s | llama-server log per request |
-| Query embedding latency | LiteLLM Prometheus delta over the job |
-| Vector search + prompt build (residual) | wall − embed − LLM |
+| Match score / verdict | LLM-as-judge (LiteLLM) comparing answer vs reference |
+| End-to-end latency | Harness wall-clock (request → SSE `close`) |
+| TTFT | Harness: time to first `textResponse` chunk |
+| Query embedding time | `llamacpp:prompt_seconds_total` delta on llama-embed |
+| Prompt processing (prefill) | `llamacpp:prompt_seconds_total` delta on llama-chat |
+| Generation (decode) | `llamacpp:tokens_predicted_seconds_total` delta on llama-chat |
+| Retrieval + overhead | derived: `ttft − embed − prefill` (vector search + prompt build) |
+| Token usage | `llamacpp:prompt_tokens_total` / `tokens_predicted_total` deltas |
+| Total runtime | Harness job wall-clock |
 
-## Repo hygiene
+LiteLLM + Prometheus also expose aggregate token-usage and TTFT metrics at
+`http://localhost:9090` (Prometheus) for dashboards.
 
-Generated artifacts are gitignored: `results/`, `data/`, `allm_storage/`
-(AnythingLLM DB + LanceDB vectors), rendered `conf/*` (from the tracked
-`conf/*.tpl`), logs/pids, and `config.env`. The llama.cpp tree (source and
-builds) is also ignored — its ZenDNN modifications belong to the llama.cpp
-fork and should be pushed there, not here.
+## Dataset notes
+
+- **Documents** come from `BeIR/nq` (Google NQ Wikipedia passages).
+- **Questions + reference answers** come from `nq_open` (Google NQ open Q&A).
+- To keep retrieval meaningful, ingestion prefers passages that actually contain
+  a reference answer (`CORPUS_SCAN`), then tops up to `DOC_N`. The number of
+  answerable questions is recorded in `ingest_metadata.json` and the report.
+- Both datasets are configurable via `EVAL_DATASET` / `CORPUS_DATASET`.
+
+## Shipping images via git-lfs (air-gapped install)
+
+```bash
+make save-images            # docker save -> images/*.tar (tracked by git-lfs)
+git lfs track "images/*.tar"   # already in .gitattributes
+git add .gitattributes images/*.tar && git commit -m "ship images"
+```
+
+On the target machine:
+
+```bash
+git lfs pull
+make load-images            # docker load all tarballs
+./setup.sh                  # no registry pulls needed
+```
+
+## Lifecycle
+
+```bash
+make up        # start serving containers
+make ps        # status
+make logs      # follow logs
+make down      # stop containers (keeps volumes)
+make clean     # remove generated data/results
+make clean-all # also drop volumes (models cache, vector DB)
+```
 
 ## Troubleshooting
 
-See [steps.md](steps.md) for the full manual walkthrough and a
-symptom→fix table (unhealthy embed model, `--flash-attn` flag values,
-ubatch vs chunk size, missing TTFT, negative residual, …).
+- **`make ingest` says ALLM_KEY is empty** — run `./setup.sh` first; it generates
+  the key and writes it to `.env`.
+- **llama-chat slow to become healthy on first run** — it's downloading the GGUF;
+  watch with `make logs`. Subsequent boots use the cached model.
+- **All answers empty / unhealthy embed model** — confirm `conf/litellm.yaml`
+  keeps `model_info: {mode: embedding}` on `embed-model`; without it LiteLLM
+  health-probes the embed endpoint with a chat completion and flags it unhealthy.
+- **Port already in use** — change the `*_PORT` values in `.env`.
+```

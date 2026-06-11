@@ -1,23 +1,23 @@
-# machine-specific config (copy of config.env.example)
-config.env
+# local config (copy of .env.example, may contain generated ALLM_KEY)
+.env
 
-# llama.cpp source/builds — separate repo, see scripts/build_llama.sh
-llama.cpp/
-llama.cpp
-
-# generated artifacts
-results/
-results_old/
+# generated data + results
 data/
-allm_storage/
+models/
 
-# rendered conf (generated from conf/*.tpl by scripts/lib.sh render_conf)
-conf/litellm.yaml
-conf/prometheus.yml
-conf/anythingllm.env
-
-# runtime droppings
-*.log
-*.pid
+# python
 __pycache__/
 *.pyc
+
+# exported docker images are tracked via git-lfs, not ignored (see .gitattributes)
+
+# ── stale artifacts from the .sh-based stack on the main branch (not part of
+#    this containerized deliverable; the compose stack uses docker volumes) ──
+allm_storage/
+results/
+results_old/
+config.env
+llama.cpp
+llama.cpp/
+*.log
+*.pid

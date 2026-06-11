@@ -1,16 +1,19 @@
 global:
   scrape_interval: 5s
+
 scrape_configs:
   - job_name: litellm
     # trailing slash matters: /metrics returns a 307 redirect
     metrics_path: /metrics/
     authorization:
-      credentials: ${LITELLM_MASTER_KEY}
+      credentials: sk-bench-master
     static_configs:
-      - targets: ['127.0.0.1:${LITELLM_PORT}']
+      - targets: ['litellm:4000']
+
   - job_name: llamacpp_chat
     static_configs:
-      - targets: ['127.0.0.1:${CHAT_PORT}']
+      - targets: ['llama-chat:8080']
+
   - job_name: llamacpp_embed
     static_configs:
-      - targets: ['127.0.0.1:${EMBED_PORT}']
+      - targets: ['llama-embed:8080']

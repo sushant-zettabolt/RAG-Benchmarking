@@ -1,86 +1,89 @@
 #!/usr/bin/env bash
-# One-shot setup: deps -> build llama.cpp (baseline + zendnn) -> start stack
-# -> init AnythingLLM -> download + ingest corpus -> end-to-end gate check.
-# Idempotent — safe to re-run; finished stages are skipped.
-#
-#   cp config.env.example config.env   # edit for your machine
+# One-shot bring-up for the containerized RAG eval stack.
 #   ./setup.sh
-#   ./run_bench.sh
-set -eo pipefail
+# Starts the 5 serving containers, waits for them to be healthy, generates an
+# AnythingLLM API key if needed, and seeds AnythingLLM's provider settings.
+# Host requirements: docker + docker compose. Nothing else.
+set -euo pipefail
 cd "$(dirname "$0")"
 
-# ── 0. config ───────────────────────────────────────────────────────────────
-if [ ! -f config.env ]; then
-    cp config.env.example config.env
-    echo "[setup] created config.env from example — review model paths / NUMA"
-    echo "        binding / ZENDNN_ROOT in it if this is a new machine."
-fi
-. scripts/lib.sh
+DC="docker compose"
 
-# ── 1. prerequisites ────────────────────────────────────────────────────────
-log "checking prerequisites"
-for c in python3 docker cmake curl envsubst git; do
-    command -v "$c" >/dev/null || die "missing required command: $c"
-done
-if [ -n "$CHAT_CPUS$EMBED_CPUS" ]; then
-    command -v numactl >/dev/null || die "numactl required for CPU binding (or clear *_CPUS in config.env)"
+# ── .env ─────────────────────────────────────────────────────────────────────
+if [ ! -f .env ]; then
+    cp .env.example .env
+    echo "[setup] created .env from .env.example"
 fi
-docker info >/dev/null 2>&1 || die "docker daemon not reachable (permissions?)"
-[ -f "$CHAT_MODEL" ]  || die "CHAT_MODEL not found: $CHAT_MODEL (set it in config.env)"
-[ -f "$EMBED_MODEL" ] || die "EMBED_MODEL not found: $EMBED_MODEL (set it in config.env)"
 
-python3 -c "import requests" 2>/dev/null || python3 -m pip install --user -q requests
-python3 -c "import datasets" 2>/dev/null || python3 -m pip install --user -q datasets
-command -v "$LITELLM_BIN" >/dev/null || {
-    log "installing litellm[proxy]"
-    python3 -m pip install --user -q 'litellm[proxy]'
+env_get() {  # env_get KEY DEFAULT
+    local v
+    v="$(grep -E "^$1=" .env | head -1 | cut -d= -f2-)"
+    if [ -z "$v" ]; then echo "$2"; else echo "$v"; fi
 }
 
-# ── 2. generate AnythingLLM API key if unset ────────────────────────────────
+CHAT_PORT="$(env_get CHAT_PORT 8081)"
+EMBED_PORT="$(env_get EMBED_PORT 8082)"
+LITELLM_PORT="$(env_get LITELLM_PORT 4000)"
+PROM_PORT="$(env_get PROM_PORT 9090)"
+ALLM_PORT="$(env_get ALLM_PORT 3001)"
+MASTER_KEY="$(env_get LITELLM_MASTER_KEY sk-bench-master)"
+CHAT_CTX="$(env_get CHAT_CTX 8192)"
+ALLM_KEY="$(env_get ALLM_KEY '')"
+
+# ── generate AnythingLLM API key if empty ────────────────────────────────────
 if [ -z "$ALLM_KEY" ]; then
-    ALLM_KEY="bench-$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-    sed -i "s|^ALLM_KEY=.*|ALLM_KEY=\"$ALLM_KEY\"|" config.env
-    export ALLM_KEY
-    log "generated ALLM_KEY and saved it to config.env"
+    ALLM_KEY="nqrag-$(openssl rand -hex 16)"
+    if grep -qE '^ALLM_KEY=' .env; then
+        sed -i "s|^ALLM_KEY=.*|ALLM_KEY=${ALLM_KEY}|" .env
+    else
+        echo "ALLM_KEY=${ALLM_KEY}" >> .env
+    fi
+    echo "[setup] generated ALLM_KEY and saved to .env"
 fi
 
-# ── 3. build llama-server binaries ──────────────────────────────────────────
-scripts/build_llama.sh
+wait_for() {  # wait_for NAME URL TRIES
+    local name="$1" url="$2" tries="${3:-60}"
+    echo -n "[setup] waiting for $name "
+    for i in $(seq 1 "$tries"); do
+        if curl -fsS -m 5 "$url" >/dev/null 2>&1; then echo " up"; return 0; fi
+        echo -n "."; sleep 5
+    done
+    echo " TIMEOUT"; return 1
+}
 
-# ── 4. bring up the stack (baseline) ────────────────────────────────────────
-./start_services.sh baseline
+# ── bring up serving containers ──────────────────────────────────────────────
+echo "[setup] starting containers (first run downloads models — be patient) ..."
+$DC up -d llama-chat llama-embed litellm prometheus anythingllm
 
-# ── 5. first-time AnythingLLM init (API key + provider settings in SQLite) ──
-scripts/init_anythingllm.sh
+# llama servers can take a while on first run (model download + load)
+wait_for "llama-chat"  "http://localhost:${CHAT_PORT}/health"  240 || { $DC logs --tail 40 llama-chat; exit 1; }
+wait_for "llama-embed" "http://localhost:${EMBED_PORT}/health" 120 || { $DC logs --tail 40 llama-embed; exit 1; }
+wait_for "litellm"     "http://localhost:${LITELLM_PORT}/health/liveliness" 60 || { $DC logs --tail 40 litellm; exit 1; }
+wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60 || { $DC logs --tail 40 anythingllm; exit 1; }
 
-# ── 6. data prep + corpus ingest (once) ─────────────────────────────────────
-if [ -f data/queries.jsonl ]; then
-    log "data/queries.jsonl exists — skipping data prep"
-else
-    log "downloading NQ corpus (CORPUS_N=$CORPUS_N QUERIES_N=$QUERIES_N)"
-    env BASE="$BASE" CORPUS_N="$CORPUS_N" QUERIES_N="$QUERIES_N" python3 prepare_data.py
-fi
+# ── seed AnythingLLM (API key + provider settings) ───────────────────────────
+echo "[setup] seeding AnythingLLM ..."
+$DC exec -T \
+    -e ALLM_KEY="$ALLM_KEY" \
+    -e LITELLM_MASTER_KEY="$MASTER_KEY" \
+    -e CHAT_CTX="$CHAT_CTX" \
+    anythingllm python3 - < scripts/seed_anythingllm.py
 
-if [ -f results/workspace_slug.txt ]; then
-    log "workspace already ingested ($(cat results/workspace_slug.txt)) — skipping ingest"
-else
-    log "ingesting corpus into AnythingLLM workspace (this embeds every chunk — takes a while)"
-    env BASE="$BASE" ALLM_KEY="$ALLM_KEY" ALLM_URL="$ALLM_URL" SLUG="$SLUG" python3 ingest.py
-fi
+echo "[setup] restarting AnythingLLM to apply settings ..."
+$DC restart anythingllm >/dev/null
+wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
 
-# ── 7. end-to-end gate check ────────────────────────────────────────────────
-log "gate check: one RAG query through the full pipeline"
-OUT=$(curl -s -m 120 -X POST "$ALLM_URL/api/v1/workspace/$SLUG/chat" \
-    -H "Authorization: Bearer $ALLM_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{"message":"What is the largest planet?","mode":"query"}')
-echo "$OUT" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-n = len(d.get('sources') or [])
-ans = (d.get('textResponse') or '')[:80]
-print(f'  sources={n}  answer={ans!r}')
-sys.exit(0 if n > 0 and ans else 1)" || die "gate check FAILED — see Troubleshooting in steps.md"
+cat <<EOF
 
-echo
-log "setup complete. run the benchmark with:  ./run_bench.sh"
+[setup] ✅ stack is up.
+  llama-chat   http://localhost:${CHAT_PORT}
+  llama-embed  http://localhost:${EMBED_PORT}
+  litellm      http://localhost:${LITELLM_PORT}
+  prometheus   http://localhost:${PROM_PORT:-9090}
+  anythingllm  http://localhost:${ALLM_PORT}
+
+Next:
+  make ingest     # download Google NQ + ingest documents into AnythingLLM
+  make evaluate   # run queries + LLM-judge
+  make report     # generate results/report.md + report.json
+EOF
