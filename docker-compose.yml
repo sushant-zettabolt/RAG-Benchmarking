@@ -3,38 +3,52 @@
 #   the `harness` profile holds the ingest/evaluate/report toolbox (run on demand)
 name: ${COMPOSE_PROJECT_NAME:-nq-rag-eval}
 
-x-llama-env: &llama-common
-  HF_TOKEN: ${HF_TOKEN:-}
-  LLAMA_CACHE: /cache
-
 services:
   # ── LLM inference (chat) ───────────────────────────────────────────────────
+  # Models are NOT downloaded — supply your own GGUF via MODELS_DIR (mounted at
+  # /models) and point CHAT_MODEL_PATH at it.
   llama-chat:
     image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
     container_name: nqrag-llama-chat
+    # CPU pinning (empty = no pin). On a multi-socket box pin to ONE NUMA node's
+    # cores and set CHAT_MEMBIND to that node so memory is local too.
+    cpuset: ${CHAT_CPUSET:-}
+    # SYS_NICE lets numactl set the memory policy (set_mempolicy/mbind) — without
+    # it the default seccomp profile blocks --membind with "Operation not permitted".
+    cap_add:
+      - SYS_NICE
     environment:
-      <<: *llama-common
       CHAT_MODEL_PATH: ${CHAT_MODEL_PATH:-}
-      CHAT_HF_REPO: ${CHAT_HF_REPO:-}
-      CHAT_HF_FILE: ${CHAT_HF_FILE:-}
       CHAT_CTX: ${CHAT_CTX:-8192}
       CHAT_BATCH: ${CHAT_BATCH:-512}
       CHAT_UBATCH: ${CHAT_UBATCH:-512}
       CHAT_PARALLEL: ${CHAT_PARALLEL:-1}
       CHAT_NGL: ${CHAT_NGL:-0}
       CHAT_THREADS: ${CHAT_THREADS:-}
+      CHAT_MEMBIND: ${CHAT_MEMBIND:-}
+      # CPUs numactl pins to (in-process); reuses the same cores as `cpuset` above.
+      CHAT_PHYSCPUBIND: ${CHAT_CPUSET:-}
       CHAT_EXTRA_FLAGS: ${CHAT_EXTRA_FLAGS:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        ARGS="--host 0.0.0.0 --port 8080 --ctx-size $$CHAT_CTX --batch-size $$CHAT_BATCH --ubatch-size $$CHAT_UBATCH --n-gpu-layers $$CHAT_NGL --parallel $$CHAT_PARALLEL --metrics --alias chat-model"
+        if [ -z "$$CHAT_MODEL_PATH" ]; then echo "ERROR: CHAT_MODEL_PATH is not set. Put your chat GGUF under MODELS_DIR and set CHAT_MODEL_PATH to its path under /models (e.g. /models/model.gguf)." >&2; exit 1; fi
+        if [ ! -f "$$CHAT_MODEL_PATH" ]; then echo "ERROR: chat model not found at $$CHAT_MODEL_PATH. Check MODELS_DIR mount and CHAT_MODEL_PATH." >&2; exit 1; fi
+        ARGS="--host 0.0.0.0 --port 8080 --ctx-size $$CHAT_CTX --batch-size $$CHAT_BATCH --ubatch-size $$CHAT_UBATCH --n-gpu-layers $$CHAT_NGL --parallel $$CHAT_PARALLEL --metrics --alias chat-model --model $$CHAT_MODEL_PATH"
         if [ -n "$$CHAT_THREADS" ]; then ARGS="$$ARGS --threads $$CHAT_THREADS"; fi
-        if [ -n "$$CHAT_MODEL_PATH" ]; then ARGS="$$ARGS --model $$CHAT_MODEL_PATH"; else ARGS="$$ARGS --hf-repo $$CHAT_HF_REPO --hf-file $$CHAT_HF_FILE"; fi
         ARGS="$$ARGS $$CHAT_EXTRA_FLAGS"
-        echo "[llama-chat] /app/llama-server $$ARGS"
-        exec /app/llama-server $$ARGS
+        NA=""
+        if [ -n "$$CHAT_PHYSCPUBIND" ]; then NA="$$NA --physcpubind=$$CHAT_PHYSCPUBIND"; fi
+        if [ -n "$$CHAT_MEMBIND" ]; then NA="$$NA --membind=$$CHAT_MEMBIND"; fi
+        NUMA=""
+        if [ -n "$$NA" ]; then
+          if ! command -v numactl >/dev/null 2>&1; then echo "[llama-chat] installing numactl ..."; apt-get update -qq && apt-get install -y -qq numactl || { echo "ERROR: failed to install numactl" >&2; exit 1; }; fi
+          NUMA="numactl$$NA"
+          echo "[llama-chat] NUMA bind:$$NA"
+        fi
+        echo "[llama-chat] $$NUMA /app/llama-server $$ARGS"
+        exec $$NUMA /app/llama-server $$ARGS
     volumes:
-      - llama-cache:/cache
       - ${MODELS_DIR:-./models}:/models:ro
     ports:
       - "${CHAT_PORT:-8081}:8080"
@@ -50,28 +64,39 @@ services:
   llama-embed:
     image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
     container_name: nqrag-llama-embed
+    cpuset: ${EMBED_CPUSET:-}
+    cap_add:
+      - SYS_NICE
     environment:
-      <<: *llama-common
       EMBED_MODEL_PATH: ${EMBED_MODEL_PATH:-}
-      EMBED_HF_REPO: ${EMBED_HF_REPO:-}
-      EMBED_HF_FILE: ${EMBED_HF_FILE:-}
       EMBED_CTX: ${EMBED_CTX:-2048}
       EMBED_BATCH: ${EMBED_BATCH:-2048}
       EMBED_UBATCH: ${EMBED_UBATCH:-2048}
       EMBED_NGL: ${EMBED_NGL:-0}
       EMBED_THREADS: ${EMBED_THREADS:-}
+      EMBED_MEMBIND: ${EMBED_MEMBIND:-}
+      EMBED_PHYSCPUBIND: ${EMBED_CPUSET:-}
       EMBED_EXTRA_FLAGS: ${EMBED_EXTRA_FLAGS:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        ARGS="--host 0.0.0.0 --port 8080 --embedding --ctx-size $$EMBED_CTX --batch-size $$EMBED_BATCH --ubatch-size $$EMBED_UBATCH --n-gpu-layers $$EMBED_NGL --metrics --alias embed-model"
+        if [ -z "$$EMBED_MODEL_PATH" ]; then echo "ERROR: EMBED_MODEL_PATH is not set. Put your embedding GGUF under MODELS_DIR and set EMBED_MODEL_PATH to its path under /models (e.g. /models/embed.gguf)." >&2; exit 1; fi
+        if [ ! -f "$$EMBED_MODEL_PATH" ]; then echo "ERROR: embedding model not found at $$EMBED_MODEL_PATH. Check MODELS_DIR mount and EMBED_MODEL_PATH." >&2; exit 1; fi
+        ARGS="--host 0.0.0.0 --port 8080 --embedding --ctx-size $$EMBED_CTX --batch-size $$EMBED_BATCH --ubatch-size $$EMBED_UBATCH --n-gpu-layers $$EMBED_NGL --metrics --alias embed-model --model $$EMBED_MODEL_PATH"
         if [ -n "$$EMBED_THREADS" ]; then ARGS="$$ARGS --threads $$EMBED_THREADS"; fi
-        if [ -n "$$EMBED_MODEL_PATH" ]; then ARGS="$$ARGS --model $$EMBED_MODEL_PATH"; else ARGS="$$ARGS --hf-repo $$EMBED_HF_REPO --hf-file $$EMBED_HF_FILE"; fi
         ARGS="$$ARGS $$EMBED_EXTRA_FLAGS"
-        echo "[llama-embed] /app/llama-server $$ARGS"
-        exec /app/llama-server $$ARGS
+        NA=""
+        if [ -n "$$EMBED_PHYSCPUBIND" ]; then NA="$$NA --physcpubind=$$EMBED_PHYSCPUBIND"; fi
+        if [ -n "$$EMBED_MEMBIND" ]; then NA="$$NA --membind=$$EMBED_MEMBIND"; fi
+        NUMA=""
+        if [ -n "$$NA" ]; then
+          if ! command -v numactl >/dev/null 2>&1; then echo "[llama-embed] installing numactl ..."; apt-get update -qq && apt-get install -y -qq numactl || { echo "ERROR: failed to install numactl" >&2; exit 1; }; fi
+          NUMA="numactl$$NA"
+          echo "[llama-embed] NUMA bind:$$NA"
+        fi
+        echo "[llama-embed] $$NUMA /app/llama-server $$ARGS"
+        exec $$NUMA /app/llama-server $$ARGS
     volumes:
-      - llama-cache:/cache
       - ${MODELS_DIR:-./models}:/models:ro
     ports:
       - "${EMBED_PORT:-8082}:8080"
@@ -87,6 +112,7 @@ services:
   litellm:
     image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}
     container_name: nqrag-litellm
+    cpuset: ${LITELLM_CPUSET:-}
     depends_on:
       llama-chat: {condition: service_healthy}
       llama-embed: {condition: service_healthy}
@@ -110,6 +136,7 @@ services:
   prometheus:
     image: ${PROM_IMAGE:-prom/prometheus:latest}
     container_name: nqrag-prometheus
+    cpuset: ${PROM_CPUSET:-}
     volumes:
       - ./conf/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prom-data:/prometheus
@@ -121,6 +148,7 @@ services:
   anythingllm:
     image: ${ALLM_IMAGE:-mintplexlabs/anythingllm:latest}
     container_name: nqrag-anythingllm
+    cpuset: ${ALLM_CPUSET:-}
     depends_on:
       litellm: {condition: service_started}
     cap_add:
@@ -161,6 +189,7 @@ services:
     build: ./harness
     image: nqrag-harness:local
     container_name: nqrag-harness
+    cpuset: ${HARNESS_CPUSET:-}
     profiles: ["tools"]
     environment:
       ALLM_URL: http://anythingllm:3001
@@ -190,6 +219,5 @@ services:
     working_dir: /app
 
 volumes:
-  llama-cache:
   anythingllm-storage:
   prom-data:

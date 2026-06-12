@@ -25,15 +25,16 @@ commands ingest Google Natural Questions, evaluate, and produce a report.
 ## Prerequisites
 
 - Docker Engine + Docker Compose v2 (`docker compose version`)
-- ~6 GB disk for images + the default small models
-- Internet access on first run (pulls images, models, and the NQ dataset).
+- ~6 GB disk for images, plus your own model GGUFs
+- Your own chat + embedding GGUF files (models are **not** downloaded — you mount them)
+- Internet access on first run (pulls images and the NQ dataset).
   For air-gapped machines see **Shipping images via git-lfs** below.
 
 ## Quick start
 
 ```bash
-cp .env.example .env        # optional: edit models/ports/sizes
-./setup.sh                  # start stack + seed AnythingLLM (first run downloads models)
+cp .env.example .env        # then set MODELS_DIR + CHAT_MODEL_PATH/EMBED_MODEL_PATH
+./setup.sh                  # start stack + seed AnythingLLM
 make ingest                 # download Google NQ + ingest 100 documents
 make evaluate               # run queries against AnythingLLM + LLM-as-judge
 make report                 # write results/report.md + results/report.json
@@ -62,14 +63,14 @@ Everything is configurable through `.env` — nothing is hardcoded.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CHAT_HF_REPO` / `CHAT_HF_FILE` | `unsloth/Llama-3.2-1B-Instruct-GGUF` / `…BF16.gguf` | Chat model (auto-downloaded) |
-| `EMBED_HF_REPO` / `EMBED_HF_FILE` | `nomic-ai/nomic-embed-text-v1.5-GGUF` / `…f16.gguf` | Embedding model |
-| `CHAT_MODEL_PATH` / `EMBED_MODEL_PATH` | _empty_ | Use a LOCAL GGUF (mounted from `MODELS_DIR`) instead of HF download |
-| `MODELS_DIR` | `./models` | Host dir mounted read-only at `/models` |
+| `MODELS_DIR` | `./models` | **Required.** Host dir holding your GGUFs, mounted read-only at `/models` |
+| `CHAT_MODEL_PATH` | `/models/Llama-3.2-1B-Instruct-BF16.gguf` | **Required.** In-container path to the chat GGUF (under `/models`) |
+| `EMBED_MODEL_PATH` | `/models/nomic-embed-text-v1.5.f16.gguf` | **Required.** In-container path to the embedding GGUF (under `/models`) |
 | `CHAT_CTX` / `CHAT_BATCH` / `CHAT_UBATCH` | `8192` / `512` / `512` | Chat context & batch sizes |
 | `EMBED_CTX` / `EMBED_BATCH` / `EMBED_UBATCH` | `2048` | Embed context & batch (keep batch ≥ ctx) |
 | `CHAT_NGL` / `EMBED_NGL` | `0` | GPU layers to offload (0 = CPU). See **GPU** below |
 | `CHAT_THREADS` / `EMBED_THREADS` | _empty_ | CPU threads (empty = auto) |
+| `*_CPUSET` / `CHAT_MEMBIND` / `EMBED_MEMBIND` | _empty_ | CPU / NUMA pinning per service — see **NUMA / CPU pinning** |
 | `CHAT_EXTRA_FLAGS` | _empty_ | Extra llama-server flags, e.g. `--flash-attn on` |
 | `*_PORT` | 8081/8082/4000/9090/3001 | Host ports for chat/embed/litellm/prometheus/anythingllm |
 | `DOC_N` | `100` | Documents to ingest |
@@ -82,8 +83,9 @@ Everything is configurable through `.env` — nothing is hardcoded.
 
 ### Models
 
-By default llama.cpp auto-downloads small GGUFs from Hugging Face on first boot
-(cached in the `llama-cache` volume). To use your own local models:
+Models are **not** downloaded — you supply your own GGUF files and mount them.
+Put the chat + embedding GGUFs in one host folder, point `MODELS_DIR` at it, and
+set `CHAT_MODEL_PATH` / `EMBED_MODEL_PATH` to their paths under `/models`:
 
 ```dotenv
 MODELS_DIR=/scratch/models/gguf
@@ -91,12 +93,63 @@ CHAT_MODEL_PATH=/models/Llama-3.1-8B-Instruct-BF16.gguf
 EMBED_MODEL_PATH=/models/nomic-embed-text-v1.5.f32.gguf
 ```
 
+The `llama-chat` / `llama-embed` containers exit immediately with a clear error
+if either variable is unset or the referenced file isn't found in the mount.
+
 ### GPU
 
 The default image is CPU-only. For NVIDIA GPUs set
 `LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda`, set `CHAT_NGL`/`EMBED_NGL`
 > 0, and add a `deploy.resources.reservations.devices` GPU reservation to the
 `llama-chat`/`llama-embed` services (requires nvidia-container-toolkit).
+
+### NUMA / CPU pinning
+
+On a multi-socket (NUMA) box, decode is memory-bandwidth bound: if the chat
+server's threads roam across sockets and pull weights over the inter-socket link,
+throughput tanks. Pin each container to a distinct, non-overlapping set of cores,
+and bind the llama servers' **memory** to the same NUMA node as their CPUs. All of
+this is optional — leave the variables empty for no pinning (the portable default).
+
+| Variable | Meaning |
+|---|---|
+| `CHAT_CPUSET` / `EMBED_CPUSET` | CPUs the llama containers may run on (Docker `cpuset`), e.g. `96-191` |
+| `LITELLM_CPUSET` / `ALLM_CPUSET` / `PROM_CPUSET` / `HARNESS_CPUSET` | Same, for the support services |
+| `CHAT_MEMBIND` / `EMBED_MEMBIND` | NUMA **memory** node for the llama servers (e.g. `1` / `0`) |
+
+Example for a 2×96-core EPYC (node 0 = cpus `0-95`, node 1 = cpus `96-191`):
+
+```dotenv
+CHAT_CPUSET=96-191    # chat owns all of node 1 …
+CHAT_MEMBIND=1        # … with its memory there too
+CHAT_THREADS=96       # one thread per physical core
+EMBED_CPUSET=0-15     # everything else lives on node 0
+EMBED_MEMBIND=0
+LITELLM_CPUSET=16-23
+ALLM_CPUSET=24-39
+PROM_CPUSET=40-43
+HARNESS_CPUSET=44-51
+```
+
+How it's enforced:
+
+- **Both layers, belt-and-suspenders.** Docker `cpuset:` constrains each container
+  at the cgroup level; the two llama servers are *additionally* launched under
+  `numactl --physcpubind=<CPUSET> --membind=<node>` so the CPU affinity and memory
+  policy are also set in-process. (`numactl` is auto-installed into the llama image
+  when a membind is requested.)
+- The llama services need the **`SYS_NICE`** capability (already in the compose
+  file) — without it the kernel's default seccomp profile blocks `set_mempolicy`
+  and `--membind` fails with *"Operation not permitted"*.
+- `numactl` can't run inside `prometheus` (distroless, no package manager) or the
+  app images, so the support services use the cgroup `cpuset` only — sufficient,
+  since they're I/O-light and first-touch keeps their memory node-local anyway.
+- Both `cpuset` and `--physcpubind` are *allowed-set* masks (threads may still
+  migrate **within** the set); they are not 1:1 core pinning. For strict
+  no-migration pinning use llama.cpp's `--cpu-mask` + `--cpu-strict 1` via
+  `CHAT_EXTRA_FLAGS`.
+
+The same `CHAT_CPUSET` also pins the chat server during the ZenDNN A/B run.
 
 ## What gets measured
 
@@ -190,10 +243,16 @@ make clean-all # also drop volumes (models cache, vector DB)
 
 - **`make ingest` says ALLM_KEY is empty** — run `./setup.sh` first; it generates
   the key and writes it to `.env`.
-- **llama-chat slow to become healthy on first run** — it's downloading the GGUF;
-  watch with `make logs`. Subsequent boots use the cached model.
+- **llama-chat exits immediately / "CHAT_MODEL_PATH is not set" or "model not
+  found"** — set `MODELS_DIR` to the host folder with your GGUFs and
+  `CHAT_MODEL_PATH` / `EMBED_MODEL_PATH` to their paths under `/models`. Watch
+  with `make logs`.
 - **All answers empty / unhealthy embed model** — confirm `conf/litellm.yaml`
   keeps `model_info: {mode: embedding}` on `embed-model`; without it LiteLLM
   health-probes the embed endpoint with a chat completion and flags it unhealthy.
+- **llama-chat/embed crash-loop with `set_mempolicy: Operation not permitted`** —
+  `--membind` needs the `SYS_NICE` capability. It's already in `docker-compose.yml`;
+  if you stripped it, restore `cap_add: [SYS_NICE]` on the llama services (or clear
+  `CHAT_MEMBIND`/`EMBED_MEMBIND` to disable memory binding).
 - **Port already in use** — change the `*_PORT` values in `.env`.
 ```
