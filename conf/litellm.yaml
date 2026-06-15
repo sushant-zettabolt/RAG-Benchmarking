@@ -4,6 +4,15 @@ model_list:
       model: openai/chat-model
       api_base: http://llama-chat:8080/v1
       api_key: "sk-noauth"
+      # Disable llama.cpp prompt caching so every request reprocesses the FULL
+      # prompt. Without this, the prompt_tokens we measure (llamacpp counter =
+      # tokens *processed*, i.e. full prompt minus cached prefix) diverges between
+      # the baseline/zendnn A/B jobs because cache reuse differs run-to-run. Forcing
+      # full prefill makes prompt_tokens == true prompt length → identical per query
+      # across backends, and makes prefill work directly comparable. Sent via
+      # extra_body so litellm's drop_params doesn't strip this non-OpenAI field.
+      extra_body:
+        cache_prompt: false
   - model_name: embed-model
     litellm_params:
       model: openai/embed-model

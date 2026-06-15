@@ -19,6 +19,9 @@ die() { echo "[run_ab] ERROR: $*" >&2; exit 1; }
 
 [ -f .env ] || die "no .env — run ./setup.sh first"
 CHAT_PORT="$(env_get CHAT_PORT 8081)"
+ALLM_PORT="$(env_get ALLM_PORT 3001)"
+PUSHGW_PORT="$(env_get PUSHGW_PORT 9091)"
+SLUG="$(env_get SLUG nq-bench)"
 ALLM_KEY="$(env_get ALLM_KEY '')"
 CHAT_MODEL_PATH="$(env_get CHAT_MODEL_PATH '')"
 
@@ -52,6 +55,42 @@ wait_for() {  # name url tries
     echo " TIMEOUT"; return 1
 }
 
+# Push the current backend name to Pushgateway so Grafana can display it.
+push_backend() {  # name   (e.g. "baseline", "zendnn", "idle")
+    printf 'ab_backend_active{backend="%s"} 1\n' "$1" \
+        | curl -fsS -m 5 --data-binary @- \
+          "http://localhost:${PUSHGW_PORT}/metrics/job/ab_bench" 2>/dev/null || true
+}
+
+# Verify the prompt cache is actually disabled for the freshly-swapped backend
+# BEFORE spending ~15 min on the eval. Sends the SAME question twice through the
+# real eval path (AnythingLLM stream-chat) and compares the chat server's
+# prompt_tokens_total delta. With cache_prompt:false honored end-to-end both
+# deltas are ~equal (full reprocess each time). If the 2nd delta collapses, the
+# slot KV is being reused → the per-query prefill numbers would be inflated and
+# prompt_tokens would diverge from the other job (the bug we are guarding).
+chat_ptok() { curl -fsS -m 10 "http://localhost:${CHAT_PORT}/metrics" 2>/dev/null \
+    | awk '/^llamacpp:prompt_tokens_total/{print $2}'; }
+verify_cache_disabled() {  # job
+    local job="$1" q='When was the last time anyone was on the moon?' b1 a1 b2 a2 d1 d2
+    b1="$(chat_ptok)"
+    curl -fsS -m 600 "http://localhost:${ALLM_PORT}/api/v1/workspace/${SLUG}/stream-chat" \
+        -H "Authorization: Bearer ${ALLM_KEY}" -H 'Content-Type: application/json' \
+        -d "{\"message\":\"$q\",\"mode\":\"query\"}" >/dev/null 2>&1
+    a1="$(chat_ptok)"
+    b2="$(chat_ptok)"
+    curl -fsS -m 600 "http://localhost:${ALLM_PORT}/api/v1/workspace/${SLUG}/stream-chat" \
+        -H "Authorization: Bearer ${ALLM_KEY}" -H 'Content-Type: application/json' \
+        -d "{\"message\":\"$q\",\"mode\":\"query\"}" >/dev/null 2>&1
+    a2="$(chat_ptok)"
+    d1=$(awk "BEGIN{print $a1-$b1}"); d2=$(awk "BEGIN{print $a2-$b2}")
+    # ratio of the smaller to larger delta; ~1.0 = cache disabled, ~0 = reuse
+    local ratio; ratio=$(awk "BEGIN{lo=($d1<$d2?$d1:$d2); hi=($d1>$d2?$d1:$d2); print (hi>0)?lo/hi:0}")
+    log "cache-probe '$job': prompt_tokens delta call1=$d1 call2=$d2 (ratio=$ratio)"
+    awk "BEGIN{exit !($ratio>0.9)}" \
+        || log "⚠️  WARNING: prompt cache appears ACTIVE for '$job' (2nd request reprocessed far fewer tokens). prompt_tokens/prefill numbers may be inflated and will NOT match the other job."
+}
+
 run_job() {  # job bindir libdir algo
     local job="$1" bindir="$2" libdir="$3" algo="$4"
     log "════ job '$job': swapping chat backend (bindir=$bindir algo=${algo:-unset}) ════"
@@ -61,8 +100,11 @@ run_job() {  # job bindir libdir algo
     wait_for "chat ($job)" "http://localhost:${CHAT_PORT}/health" 120 \
         || { $DC_AB logs --tail 40 llama-chat; die "chat server ($job) did not come up"; }
     docker logs nqrag-llama-chat 2>&1 | grep -iE 'zendnn|backend' | head -3 || true
+    verify_cache_disabled "$job"
+    push_backend "$job"
     log "evaluating job '$job' ..."
     $DC_BASE run --rm -e JOB="$job" harness python evaluate.py
+    push_backend "idle"
 }
 
 run_job "$JOB_A" "$AB_BASELINE_BINDIR" "$AB_BASELINE_BINDIR" ""

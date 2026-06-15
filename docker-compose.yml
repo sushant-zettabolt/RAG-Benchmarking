@@ -34,7 +34,11 @@ services:
       - |
         if [ -z "$$CHAT_MODEL_PATH" ]; then echo "ERROR: CHAT_MODEL_PATH is not set. Put your chat GGUF under MODELS_DIR and set CHAT_MODEL_PATH to its path under /models (e.g. /models/model.gguf)." >&2; exit 1; fi
         if [ ! -f "$$CHAT_MODEL_PATH" ]; then echo "ERROR: chat model not found at $$CHAT_MODEL_PATH. Check MODELS_DIR mount and CHAT_MODEL_PATH." >&2; exit 1; fi
-        ARGS="--host 0.0.0.0 --port 8080 --ctx-size $$CHAT_CTX --batch-size $$CHAT_BATCH --ubatch-size $$CHAT_UBATCH --n-gpu-layers $$CHAT_NGL --parallel $$CHAT_PARALLEL --metrics --alias chat-model --model $$CHAT_MODEL_PATH"
+        # OpenMP thread affinity: bind threads close and place one per physical core
+        # so all threads stay on the pinned NUMA node (cpuset). Matches the A/B overlay.
+        export OMP_PROC_BIND=close
+        export OMP_PLACES=cores
+        ARGS="--host 0.0.0.0 --port 8080 --ctx-size $$CHAT_CTX --n-gpu-layers $$CHAT_NGL --parallel $$CHAT_PARALLEL --no-mmap -fa on --metrics --alias chat-model --model $$CHAT_MODEL_PATH"
         if [ -n "$$CHAT_THREADS" ]; then ARGS="$$ARGS --threads $$CHAT_THREADS"; fi
         ARGS="$$ARGS $$CHAT_EXTRA_FLAGS"
         NA=""
@@ -132,16 +136,50 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # ── Pushgateway (receives ab_backend_active metric from run_ab.sh) ───────────
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: nqrag-pushgateway
+    cpuset: ${PROM_CPUSET:-}
+    ports:
+      - "${PUSHGW_PORT:-9091}:9091"
+    restart: unless-stopped
+
   # ── Prometheus (scrapes LiteLLM + both llama servers) ────────────────────────
   prometheus:
     image: ${PROM_IMAGE:-prom/prometheus:latest}
     container_name: nqrag-prometheus
     cpuset: ${PROM_CPUSET:-}
+    depends_on:
+      pushgateway: {condition: service_started}
     volumes:
       - ./conf/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prom-data:/prometheus
     ports:
       - "${PROM_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  # ── Grafana (visualises the Prometheus metrics — live RAG pipeline flow) ─────
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:latest}
+    container_name: nqrag-grafana
+    cpuset: ${GRAFANA_CPUSET:-}
+    depends_on:
+      prometheus: {condition: service_started}
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      # anonymous view so the link opens straight to the dashboard, no login
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_USERS_DEFAULT_THEME: light
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/rag-flow.json
+    volumes:
+      - ./conf/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./conf/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
     restart: unless-stopped
 
   # ── AnythingLLM (the RAG application) ────────────────────────────────────────
@@ -221,3 +259,4 @@ services:
 volumes:
   anythingllm-storage:
   prom-data:
+  grafana-data:
