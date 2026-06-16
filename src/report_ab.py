@@ -50,8 +50,49 @@ def speedup(a, b, lower_better=False):
     return (a / b) if lower_better else (b / a)
 
 
+def speedup_label(sp):
+    """Render a speedup ratio with correct faster/slower wording.
+
+    sp > 1 means JOB_B is faster; sp < 1 means it is slower. The old code
+    always printed 'faster', so a 0.07x regression read as '0.07x faster'.
+    """
+    if sp is None:
+        return "n/a"
+    if sp >= 1:
+        return f"{sp:.2f}x faster"
+    return f"{1 / sp:.2f}x slower"
+
+
+# If the two jobs processed wildly different token counts, the per-stage
+# latency comparison is apples-to-oranges (latency scales with token count).
+# Flag it instead of presenting it as a clean speedup.
+WORKLOAD_TOLERANCE = 0.10  # fractional difference in mean tokens we tolerate
+
+
+def workload_comparable(a, b):
+    for key in ("prompt_tokens", "completion_tokens"):
+        x, y = a.get(key), b.get(key)
+        if not x or not y:
+            continue
+        if abs(x - y) / max(x, y) > WORKLOAD_TOLERANCE:
+            return False
+    return True
+
+
 def comparison_sections(a, b, h="##"):
-    o = [f"{h} Per-stage mean latency\n"]
+    comparable = workload_comparable(a, b)
+    o = []
+    if not comparable:
+        o.append(
+            f"> ⚠️ **Latency comparison not valid:** {JOB_A} and {JOB_B} processed "
+            f"different workloads (prompt tokens {f(a['prompt_tokens'],0)} vs "
+            f"{f(b['prompt_tokens'],0)}, completion tokens {f(a['completion_tokens'],1)} "
+            f"vs {f(b['completion_tokens'],1)}). Per-stage latency scales with token "
+            f"count, so the latency speedups below are apples-to-oranges. Compare the "
+            f"per-token throughput table instead, and check why the runs diverged "
+            f"(see Sanity / Evaluation detail — likely a broken job).\n"
+        )
+    o.append(f"{h} Per-stage mean latency\n")
     o.append(f"| Stage | {JOB_A} (s) | {JOB_B} (s) | speedup |")
     o.append("|---|---|---|---|")
     for label, key in [
@@ -61,8 +102,7 @@ def comparison_sections(a, b, h="##"):
         ("End-to-end (total)", "total_s"),
     ]:
         sp = speedup(a[key], b[key], lower_better=True)
-        o.append(f"| {label} | {f(a[key],3)} | {f(b[key],3)} | "
-                 f"{(f'{sp:.2f}x faster' if sp else 'n/a')} |")
+        o.append(f"| {label} | {f(a[key],3)} | {f(b[key],3)} | {speedup_label(sp)} |")
 
     o.append(f"\n{h} Inference throughput (tokens/sec, mean)\n")
     o.append(f"| Metric | {JOB_A} | {JOB_B} | speedup |")
@@ -89,9 +129,14 @@ def comparison_sections(a, b, h="##"):
     o.append(f"\n{h} Speedup summary\n")
     o.append(f"- Prefill throughput: **{f(pf)}x**  ({f(a['prefill_tps'],1)} → {f(b['prefill_tps'],1)} t/s)")
     o.append(f"- Decode throughput:  **{f(dc)}x**  ({f(a['decode_tps'],1)} → {f(b['decode_tps'],1)} t/s)")
-    o.append(f"- LLM inference latency: **{f(llm)}x faster**")
-    o.append(f"- End-to-end latency: **{f(e2e)}x faster**  ({f(a['total_s'])}s → {f(b['total_s'])}s)")
-    o.append(f"\n_ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as expected._")
+    o.append(f"- LLM inference latency: **{speedup_label(llm)}**")
+    o.append(f"- End-to-end latency: **{speedup_label(e2e)}**  ({f(a['total_s'])}s → {f(b['total_s'])}s)")
+    if comparable:
+        o.append(f"\n_ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as expected._")
+    else:
+        o.append(f"\n_Note: throughput (t/s) is the only valid comparison here — the two runs "
+                 f"processed different token counts, so latency speedups reflect workload size, "
+                 f"not backend speed._")
     return o
 
 

@@ -13,6 +13,23 @@ model_list:
       # extra_body so litellm's drop_params doesn't strip this non-OpenAI field.
       extra_body:
         cache_prompt: false
+  # Fixed-decode variant of chat-model for ZenDNN A/B perf runs. `ignore_eos`
+  # stops the model from ever ending early and `n_predict` caps generation, so
+  # EVERY request emits exactly n_predict decode tokens on BOTH backends —
+  # combined with cache_prompt:false (identical prefill) and per-query sessions
+  # (identical prompt), prefill+decode work is identical and latency is directly
+  # comparable. n_predict is an INTEGER (a string value hangs llama.cpp);
+  # run_ab.sh rewrites it from AB_FIXED_DECODE. Only used when AnythingLLM is
+  # pointed here (GENERIC_OPEN_AI_MODEL_PREF=chat-model-bench).
+  - model_name: chat-model-bench
+    litellm_params:
+      model: openai/chat-model
+      api_base: http://llama-chat:8080/v1
+      api_key: "sk-noauth"
+      extra_body:
+        cache_prompt: false
+        ignore_eos: true
+        n_predict: 128
   - model_name: embed-model
     litellm_params:
       model: openai/embed-model

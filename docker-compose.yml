@@ -200,7 +200,10 @@ services:
       LLM_PROVIDER: generic-openai
       GENERIC_OPEN_AI_BASE_PATH: http://litellm:4000/v1
       GENERIC_OPEN_AI_API_KEY: ${LITELLM_MASTER_KEY:-sk-bench-master}
-      GENERIC_OPEN_AI_MODEL_PREF: chat-model
+      # Which LiteLLM model AnythingLLM generates with. run_ab.sh swaps this to
+      # `chat-model-bench` (ignore_eos + fixed n_predict) for fixed-decode A/B
+      # runs so both backends emit an identical number of decode tokens.
+      GENERIC_OPEN_AI_MODEL_PREF: ${CHAT_MODEL_NAME:-chat-model}
       GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT: ${CHAT_CTX:-8192}
       # Embedder via LiteLLM (Generic OpenAI embedder)
       EMBEDDING_ENGINE: generic-openai

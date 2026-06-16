@@ -19,12 +19,16 @@ Captured per query:
 import os
 import json
 import time
+import uuid
 
 import common as C
 
 QUERY_MODE     = os.environ.get("QUERY_MODE", "query")
 JUDGE_MODEL    = os.environ.get("JUDGE_MODEL", "chat-model")
 JUDGE_THRESH   = C.envf("JUDGE_THRESHOLD", 0.5)
+# Quality judging is meaningless in fixed-decode benchmark mode (answers are
+# truncated at n_predict), so run_ab.sh sets DO_JUDGE=0 there to skip it.
+DO_JUDGE       = os.environ.get("DO_JUDGE", "1") != "0"
 WARMUP         = C.envi("WARMUP", 1)
 EVAL_LIMIT     = C.envi("EVAL_LIMIT", 0)
 # Optional A/B job tag (e.g. "baseline" / "zendnn"). When set, results are
@@ -50,7 +54,10 @@ def run_one(q, do_judge=True):
     chat_before = C.scrape_metrics(C.CHAT_METRICS_URL)
     emb_sum_b, emb_cnt_b = C.scrape_litellm_latency("embed-model")
 
-    res = C.allm_stream_chat(q["question"], mode=QUERY_MODE)
+    # Unique session per query → no chat-history carryover between queries, so
+    # prompt_tokens depend only on retrieval and stay comparable across A/B jobs.
+    session_id = f"eval-{JOB or 'nojob'}-{uuid.uuid4().hex}"
+    res = C.allm_stream_chat(q["question"], mode=QUERY_MODE, session_id=session_id)
 
     chat_after = C.scrape_metrics(C.CHAT_METRICS_URL)
     emb_sum_a, emb_cnt_a = C.scrape_litellm_latency("embed-model")
@@ -99,6 +106,10 @@ def run_one(q, do_judge=True):
         rec["judge_score"]   = j["score"]
         rec["judge_verdict"] = j["verdict"]
         rec["judge_reason"]  = j["reason"]
+        # keep the raw judge text when it couldn't be parsed, so a weak/empty
+        # judge (e.g. small models) is debuggable instead of a silent 0%
+        if j["verdict"] in ("unparsed", "error"):
+            rec["judge_raw"] = j.get("raw")
         rec["match"] = (j["score"] is not None and j["score"] >= JUDGE_THRESH)
     else:
         rec["judge_score"] = None
@@ -128,7 +139,7 @@ def main():
     records = []
     with open(os.path.join(C.RESULTS_DIR, f"metrics{TAG}.jsonl"), "w") as fh:
         for i, q in enumerate(questions, 1):
-            rec = run_one(q)
+            rec = run_one(q, do_judge=DO_JUDGE)
             records.append(rec)
             fh.write(json.dumps(rec) + "\n")
             fh.flush()

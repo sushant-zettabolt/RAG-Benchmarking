@@ -20,6 +20,7 @@ die() { echo "[run_ab] ERROR: $*" >&2; exit 1; }
 [ -f .env ] || die "no .env — run ./setup.sh first"
 CHAT_PORT="$(env_get CHAT_PORT 8081)"
 ALLM_PORT="$(env_get ALLM_PORT 3001)"
+LITELLM_PORT="$(env_get LITELLM_PORT 4000)"
 PUSHGW_PORT="$(env_get PUSHGW_PORT 9091)"
 SLUG="$(env_get SLUG nq-bench)"
 ALLM_KEY="$(env_get ALLM_KEY '')"
@@ -30,6 +31,12 @@ AB_BASELINE_BINDIR="$(env_get AB_BASELINE_BINDIR "$PWD/llama.cpp/build/bin")"
 AB_ZENDNN_BINDIR="$(env_get AB_ZENDNN_BINDIR "$PWD/llama.cpp/build_zendnn/bin")"
 AB_ZENDNN_LIBDIR="$(env_get AB_ZENDNN_LIBDIR "/home/zettabolt/internal_zendnn/ZenDNN/build/install/zendnnl/lib")"
 AB_ZENDNN_ALGO="$(env_get AB_ZENDNN_ALGO "1")"
+# Fixed-decode mode: set AB_FIXED_DECODE=<N> (in .env or env) to force EVERY query
+# to emit exactly N decode tokens on BOTH backends (ignore_eos + n_predict=N),
+# so prefill+decode work is identical and latency is directly comparable. Empty =
+# off (natural generation, quality-meaningful). Quality judging is skipped when on.
+AB_FIXED_DECODE="$(env_get AB_FIXED_DECODE "")"
+LITELLM_YAML="conf/litellm.yaml"
 JOB_A="${JOB_A:-baseline}"
 JOB_B="${JOB_B:-zendnn}"
 
@@ -55,6 +62,38 @@ wait_for() {  # name url tries
     echo " TIMEOUT"; return 1
 }
 
+# ── fixed-decode mode ────────────────────────────────────────────────────────
+# Point AnythingLLM at the `chat-model-bench` LiteLLM model (ignore_eos +
+# n_predict=N) so both backends emit exactly N decode tokens. Restored on exit.
+DOJUDGE_ARGS=""
+BENCH_ACTIVE=0
+restore_stack() {
+    [ "$BENCH_ACTIVE" = "1" ] || return 0
+    log "restoring stack after fixed-decode run (model→chat-model, litellm.yaml) ..."
+    [ -f "$LITELLM_YAML.abbak" ] && mv -f "$LITELLM_YAML.abbak" "$LITELLM_YAML"
+    CHAT_MODEL_NAME=chat-model $DC_BASE up -d --force-recreate --no-deps anythingllm >/dev/null 2>&1 || true
+    $DC_BASE restart litellm >/dev/null 2>&1 || true
+    BENCH_ACTIVE=0
+}
+trap restore_stack EXIT INT TERM
+
+enable_fixed_decode() {  # N
+    local n="$1"
+    case "$n" in ''|*[!0-9]*) die "AB_FIXED_DECODE must be a positive integer, got '$n'";; esac
+    [ "$n" -gt 0 ] || die "AB_FIXED_DECODE must be > 0"
+    log "════ fixed-decode mode ON: forcing exactly $n decode tokens/query on both backends ════"
+    cp -f "$LITELLM_YAML" "$LITELLM_YAML.abbak"
+    BENCH_ACTIVE=1
+    # rewrite the (integer) n_predict in the chat-model-bench block
+    sed -i -E "s/^([[:space:]]*n_predict:[[:space:]]*)[0-9]+/\1$n/" "$LITELLM_YAML"
+    $DC_BASE restart litellm >/dev/null
+    wait_for "litellm" "http://localhost:${LITELLM_PORT}/health/readiness" 30 || true
+    # recreate AnythingLLM so it picks up GENERIC_OPEN_AI_MODEL_PREF=chat-model-bench
+    CHAT_MODEL_NAME=chat-model-bench $DC_BASE up -d --force-recreate --no-deps anythingllm >/dev/null
+    wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
+    DOJUDGE_ARGS="-e DO_JUDGE=0"   # judging truncated answers is meaningless
+}
+
 # Push the current backend name to Pushgateway so Grafana can display it.
 push_backend() {  # name   (e.g. "baseline", "zendnn", "idle")
     printf 'ab_backend_active{backend="%s"} 1\n' "$1" \
@@ -73,15 +112,20 @@ chat_ptok() { curl -fsS -m 10 "http://localhost:${CHAT_PORT}/metrics" 2>/dev/nul
     | awk '/^llamacpp:prompt_tokens_total/{print $2}'; }
 verify_cache_disabled() {  # job
     local job="$1" q='When was the last time anyone was on the moon?' b1 a1 b2 a2 d1 d2
+    # Use a FRESH AnythingLLM session per call so neither request carries chat
+    # history — both then send an identical prompt to llama-server, isolating the
+    # server-side KV-cache-reuse signal we're probing (history carryover would
+    # otherwise change call 2's prompt and confound the delta comparison).
+    local s1="cacheprobe-${job}-$$-a" s2="cacheprobe-${job}-$$-b"
     b1="$(chat_ptok)"
     curl -fsS -m 600 "http://localhost:${ALLM_PORT}/api/v1/workspace/${SLUG}/stream-chat" \
         -H "Authorization: Bearer ${ALLM_KEY}" -H 'Content-Type: application/json' \
-        -d "{\"message\":\"$q\",\"mode\":\"query\"}" >/dev/null 2>&1
+        -d "{\"message\":\"$q\",\"mode\":\"query\",\"sessionId\":\"$s1\"}" >/dev/null 2>&1
     a1="$(chat_ptok)"
     b2="$(chat_ptok)"
     curl -fsS -m 600 "http://localhost:${ALLM_PORT}/api/v1/workspace/${SLUG}/stream-chat" \
         -H "Authorization: Bearer ${ALLM_KEY}" -H 'Content-Type: application/json' \
-        -d "{\"message\":\"$q\",\"mode\":\"query\"}" >/dev/null 2>&1
+        -d "{\"message\":\"$q\",\"mode\":\"query\",\"sessionId\":\"$s2\"}" >/dev/null 2>&1
     a2="$(chat_ptok)"
     d1=$(awk "BEGIN{print $a1-$b1}"); d2=$(awk "BEGIN{print $a2-$b2}")
     # ratio of the smaller to larger delta; ~1.0 = cache disabled, ~0 = reuse
@@ -103,9 +147,11 @@ run_job() {  # job bindir libdir algo
     verify_cache_disabled "$job"
     push_backend "$job"
     log "evaluating job '$job' ..."
-    $DC_BASE run --rm -e JOB="$job" harness python evaluate.py
+    $DC_BASE run --rm -e JOB="$job" $DOJUDGE_ARGS harness python evaluate.py
     push_backend "idle"
 }
+
+[ -n "$AB_FIXED_DECODE" ] && enable_fixed_decode "$AB_FIXED_DECODE"
 
 run_job "$JOB_A" "$AB_BASELINE_BINDIR" "$AB_BASELINE_BINDIR" ""
 run_job "$JOB_B" "$AB_ZENDNN_BINDIR"   "$AB_ZENDNN_LIBDIR"   "$AB_ZENDNN_ALGO"

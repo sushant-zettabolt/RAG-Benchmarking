@@ -107,12 +107,19 @@ def scrape_litellm_latency(model):
 
 
 # ── AnythingLLM ──────────────────────────────────────────────────────────────
-def allm_stream_chat(question, mode="query", timeout=600):
+def allm_stream_chat(question, mode="query", timeout=600, session_id=None):
     """Send one query to AnythingLLM /stream-chat and parse the SSE stream.
 
     AnythingLLM emits incremental `textResponse` chunks, then a `close:true`
     chunk, and finally a trailing event carrying the retrieved `sources` array.
     We must keep reading past the first close to capture sources & final text.
+
+    `session_id` scopes the conversation thread. Pass a UNIQUE id per query so
+    AnythingLLM does not carry prior answers forward as chat history — otherwise
+    each prompt grows by the previous answer's length, inflating prompt_tokens
+    and prefill latency and making them diverge between A/B jobs whenever the two
+    backends produce different-length answers. Omit only if you intentionally
+    want a running conversation.
 
     Returns dict: {answer, n_sources, wall_s, ttft_s, ok, error}.
     """
@@ -120,9 +127,12 @@ def allm_stream_chat(question, mode="query", timeout=600):
     answer, n_sources, ttft, t_close, ok, err = "", None, None, None, False, None
     url = f"{ALLM_URL}/api/v1/workspace/{SLUG}/stream-chat"
     headers = {**ALLM_HEADERS, "Content-Type": "application/json"}
+    body = {"message": question, "mode": mode}
+    if session_id is not None:
+        body["sessionId"] = session_id
     try:
         with requests.post(url, headers=headers,
-                           json={"message": question, "mode": mode},
+                           json=body,
                            stream=True, timeout=timeout) as resp:
             ok = resp.status_code == 200
             if not ok:
@@ -175,16 +185,26 @@ _JUDGE_SYS = (
 
 def judge_answer(question, references, candidate, model, timeout=120):
     """LLM-as-judge via LiteLLM chat completion. Returns
-    {score, verdict, reason, raw, usage} (best-effort parse; never raises)."""
+    {score, verdict, reason, raw, usage} (best-effort parse; never raises).
+
+    The judge IS the model under test (litellm only routes `chat-model`), so it
+    must work across very different models. We therefore:
+      * fold the grading instructions into a single user turn — some chat
+        templates (e.g. Gemma) don't support a `system` role and silently return
+        empty content when one is sent;
+      * allow enough tokens for "thinking" models that emit a reasoning preamble
+        before the JSON;
+      * fall back to `reasoning_content` when `content` is empty (reasoning
+        models put their text there).
+    """
     refs = " | ".join(r for r in references if r) or "(no reference provided)"
-    user = (f"QUESTION: {question}\nREFERENCE(S): {refs}\n"
+    user = (f"{_JUDGE_SYS}\n\nQUESTION: {question}\nREFERENCE(S): {refs}\n"
             f"CANDIDATE: {candidate or '(empty)'}\n\nGrade now.")
     body = {
         "model": model,
-        "messages": [{"role": "system", "content": _JUDGE_SYS},
-                     {"role": "user", "content": user}],
+        "messages": [{"role": "user", "content": user}],
         "temperature": 0,
-        "max_tokens": 200,
+        "max_tokens": 512,
     }
     try:
         r = requests.post(f"{LITELLM_URL}/v1/chat/completions",
@@ -192,7 +212,8 @@ def judge_answer(question, references, candidate, model, timeout=120):
                                    "Content-Type": "application/json"},
                           json=body, timeout=timeout)
         data = r.json()
-        content = data["choices"][0]["message"]["content"]
+        msg = data["choices"][0]["message"]
+        content = msg.get("content") or msg.get("reasoning_content") or ""
         usage = data.get("usage", {})
         parsed = _parse_judge(content)
         parsed["raw"] = content
