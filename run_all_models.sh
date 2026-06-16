@@ -23,7 +23,8 @@ run_model() {  # slug container_model_path
     log "✅ $slug done — report saved to reports/report_ab_${slug}.md"
 }
 
-# 5 remaining models (Llama-3.1-8B-BF16 smoke test already done)
+# All 6 models.
+run_model "llama31-8b-bf16"    "/models/Llama-3.1-8B-Instruct-BF16.gguf"
 run_model "gemma4-4b-bf16"     "/models/Gemma-4-E2B-It-4.6B-BF16.gguf"
 run_model "mixtral-8x7b-bf16"  "/models/Mixtral-8x7B-Instruct-v0.1-BF16.gguf"
 run_model "gpt-oss-20b-bf16"   "/models/gpt-oss-20B-BF16.gguf"
