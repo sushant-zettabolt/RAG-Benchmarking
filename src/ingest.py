@@ -35,6 +35,11 @@ CORPUS_DATASET = os.environ.get("CORPUS_DATASET", "BeIR/nq")
 DOC_N          = C.envi("DOC_N", 100)
 EVAL_N         = C.envi("EVAL_N", 100)
 CORPUS_SCAN    = C.envi("CORPUS_SCAN", 20000)
+# Retrieval: how many chunks to stuff into each prompt. Higher topN (and a low
+# similarity threshold so they actually get included) yields larger prompts =
+# a heavier, more representative prefill workload for the ZenDNN A/B.
+RETRIEVAL_TOPN = C.envi("RETRIEVAL_TOPN", 20)
+RETRIEVAL_SIM_THRESHOLD = C.envf("RETRIEVAL_SIM_THRESHOLD", 0.0)
 
 
 def load_eval_questions():
@@ -141,6 +146,16 @@ def get_or_create_workspace():
                 break
     if not slug:
         raise RuntimeError(f"could not create or find workspace '{C.SLUG}'")
+    # Configure retrieval so prompts carry a substantial context (bigger prefill).
+    try:
+        requests.post(f"{C.ALLM_URL}/api/v1/workspace/{slug}/update",
+                      headers={**C.ALLM_HEADERS, "Content-Type": "application/json"},
+                      json={"topN": RETRIEVAL_TOPN,
+                            "similarityThreshold": RETRIEVAL_SIM_THRESHOLD}, timeout=60)
+        print(f"[ingest] retrieval: topN={RETRIEVAL_TOPN} "
+              f"similarityThreshold={RETRIEVAL_SIM_THRESHOLD}")
+    except Exception as e:
+        print(f"[ingest] WARNING: could not set topN/threshold: {e}")
     print(f"[ingest] workspace: {slug}")
     return slug
 

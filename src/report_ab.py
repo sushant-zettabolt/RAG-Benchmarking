@@ -33,6 +33,9 @@ def agg(rows):
     return {
         "n": len(rows), "n_ok": len(ok),
         "match_rate": (sum(1 for r in rows if r.get("match")) / len(rows)) if rows else None,
+        # model-independent correctness signal — computed even when the LLM judge
+        # is off (fixed-decode mode), so a fast-but-garbage backend is still visible
+        "contains_ref": (sum(1 for r in rows if r.get("contains_ref")) / len(rows)) if rows else None,
         "mean_judge_score": mean(ok, "judge_score"),
         "total_s": mean(ok, "total_s"), "ttft_s": mean(ok, "ttft_s"),
         "embed_s": mean(ok, "embed_s"), "retrieval_s": mean(ok, "retrieval_s"),
@@ -121,6 +124,20 @@ def comparison_sections(a, b, h="##"):
     o.append(f"| Query embedding (s) | {f(a['embed_s'],3)} | {f(b['embed_s'],3)} |")
     o.append(f"| Retrieval + overhead (s) | {f(a['retrieval_s'],3)} | {f(b['retrieval_s'],3)} |")
     o.append(f"| Match rate (LLM judge) | {f((a['match_rate'] or 0)*100,1)}% | {f((b['match_rate'] or 0)*100,1)}% |")
+    o.append(f"| Contains reference (lexical) | {f((a['contains_ref'] or 0)*100,1)}% | {f((b['contains_ref'] or 0)*100,1)}% |")
+
+    # A faster backend that stopped producing correct answers is NOT a win. The
+    # lexical signal is model-independent and survives fixed-decode truncation, so
+    # use it to flag a backend whose output quality collapsed relative to the other.
+    ar, br = (a["contains_ref"] or 0), (b["contains_ref"] or 0)
+    if ar >= 0.2 and br <= ar / 2:
+        o.append(
+            f"\n> ⚠️ **{JOB_B} output quality collapsed:** lexical reference-hit rate "
+            f"fell from {ar*100:.0f}% ({JOB_A}) to {br*100:.0f}% ({JOB_B}) while {JOB_A} "
+            f"stayed correct. Any {JOB_B} speedup above is **fast-but-wrong** — it is "
+            f"producing incorrect/garbage output, not equivalent answers faster. Inspect "
+            f"the {JOB_B} example answers below before trusting the throughput numbers.\n"
+        )
 
     pf = speedup(a["prefill_tps"], b["prefill_tps"])
     dc = speedup(a["decode_tps"], b["decode_tps"])
