@@ -10,13 +10,13 @@ _Comparison: **baseline** vs **zendnn** — same pipeline, model and queries; on
 
 | Stage | baseline (s) | zendnn (s) | speedup |
 |---|---|---|---|
-| Query embedding | 0.011 | 0.014 | 1.30x slower |
-| Retrieval + overhead | 0.152 | 0.148 | 1.03x faster |
-| Prompt processing (prefill) | 5.627 | 5.006 | 1.12x faster |
-| Generation (decode) | 3.451 | 3.467 | 1.00x slower |
-| LLM total (prefill+decode) | 9.078 | 8.473 | 1.07x faster |
-| Time to first token | 5.790 | 5.168 | 1.12x faster |
-| End-to-end (total) | 9.169 | 8.563 | 1.07x faster |
+| Query embedding | 0.011 | 0.014 | 1.30x |
+| Retrieval + overhead | 0.152 | 0.148 | 1.03x |
+| Prompt processing (prefill) | 5.627 | 5.006 | 1.12x |
+| Generation (decode) | 3.451 | 3.467 | 1.005x |
+| LLM total (prefill+decode) | 9.078 | 8.473 | 1.07x |
+| Time to first token | 5.790 | 5.168 | 1.12x |
+| End-to-end (total) | 9.169 | 8.563 | 1.07x |
 
 ### Inference throughput (tokens/sec, mean)
 
@@ -40,8 +40,8 @@ _Comparison: **baseline** vs **zendnn** — same pipeline, model and queries; on
 
 - Prefill throughput: **1.13x**  (718.1 → 808.0 t/s)
 - Decode throughput:  **1.00x**  (37.1 → 36.9 t/s)
-- LLM inference latency: **1.07x faster**
-- End-to-end latency: **1.07x faster**  (9.17s → 8.56s)
+- LLM inference latency: **1.07x**
+- End-to-end latency: **1.07x**  (9.17s → 8.56s)
 
 _ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as expected._
 

@@ -56,14 +56,17 @@ def speedup(a, b, lower_better=False):
 def speedup_label(sp):
     """Render a speedup ratio with correct faster/slower wording.
 
-    sp > 1 means JOB_B is faster; sp < 1 means it is slower. The old code
-    always printed 'faster', so a 0.07x regression read as '0.07x faster'.
+    The ratio is rendered as a bare multiplier (e.g. '1.12x') with no
+    faster/slower wording. A near-equal ratio that rounds to 1.00x at 2
+    decimals is widened to 3 decimals so a real difference is still visible.
     """
     if sp is None:
         return "n/a"
-    if sp >= 1:
-        return f"{sp:.2f}x faster"
-    return f"{1 / sp:.2f}x slower"
+    ratio = sp if sp >= 1 else 1 / sp
+    s = f"{ratio:.2f}"
+    if s == "1.00":
+        s = f"{ratio:.3f}"
+    return f"{s}x"
 
 
 # If the two jobs processed wildly different token counts, the per-stage
