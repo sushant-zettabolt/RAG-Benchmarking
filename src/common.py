@@ -20,6 +20,11 @@ EMBED_METRICS_URL = os.environ.get("EMBED_METRICS_URL", "http://llama-embed:8080
 ALLM_KEY          = os.environ.get("ALLM_KEY", "")
 LITELLM_KEY       = os.environ.get("LITELLM_MASTER_KEY", "sk-bench-master")
 SLUG              = os.environ.get("SLUG", "nq-bench")
+# External judge (e.g. DeepSeek). When JUDGE_BASE_URL is set, judge_answer()
+# posts to that endpoint with JUDGE_API_KEY instead of routing through LiteLLM.
+# Example: JUDGE_BASE_URL=https://api.deepseek.com/v1  JUDGE_MODEL=deepseek-chat
+JUDGE_BASE_URL    = os.environ.get("JUDGE_BASE_URL", "").rstrip("/")
+JUDGE_API_KEY     = os.environ.get("JUDGE_API_KEY", "")
 DATA_DIR          = os.environ.get("DATA_DIR", "/data")
 
 DOCS_DIR      = os.path.join(DATA_DIR, "docs")
@@ -184,18 +189,17 @@ _JUDGE_SYS = (
 
 
 def judge_answer(question, references, candidate, model, timeout=120):
-    """LLM-as-judge via LiteLLM chat completion. Returns
+    """LLM-as-judge via OpenAI-compatible chat completion. Returns
     {score, verdict, reason, raw, usage} (best-effort parse; never raises).
 
-    The judge IS the model under test (litellm only routes `chat-model`), so it
-    must work across very different models. We therefore:
-      * fold the grading instructions into a single user turn — some chat
-        templates (e.g. Gemma) don't support a `system` role and silently return
-        empty content when one is sent;
-      * allow enough tokens for "thinking" models that emit a reasoning preamble
-        before the JSON;
-      * fall back to `reasoning_content` when `content` is empty (reasoning
-        models put their text there).
+    When JUDGE_BASE_URL + JUDGE_API_KEY are set, calls that endpoint directly
+    (e.g. DeepSeek: JUDGE_BASE_URL=https://api.deepseek.com/v1,
+    JUDGE_MODEL=deepseek-chat). Otherwise routes through the local LiteLLM proxy.
+
+    We fold grading instructions into a single user turn — some chat templates
+    (e.g. Gemma) don't support a system role and silently return empty content.
+    We allow enough tokens for reasoning models that emit a preamble before JSON,
+    and fall back to reasoning_content when content is empty.
     """
     refs = " | ".join(r for r in references if r) or "(no reference provided)"
     user = (f"{_JUDGE_SYS}\n\nQUESTION: {question}\nREFERENCE(S): {refs}\n"
@@ -206,9 +210,15 @@ def judge_answer(question, references, candidate, model, timeout=120):
         "temperature": 0,
         "max_tokens": 512,
     }
+    if JUDGE_BASE_URL and JUDGE_API_KEY:
+        url = f"{JUDGE_BASE_URL}/chat/completions"
+        auth = f"Bearer {JUDGE_API_KEY}"
+    else:
+        url = f"{LITELLM_URL}/v1/chat/completions"
+        auth = f"Bearer {LITELLM_KEY}"
     try:
-        r = requests.post(f"{LITELLM_URL}/v1/chat/completions",
-                          headers={"Authorization": f"Bearer {LITELLM_KEY}",
+        r = requests.post(url,
+                          headers={"Authorization": auth,
                                    "Content-Type": "application/json"},
                           json=body, timeout=timeout)
         data = r.json()
