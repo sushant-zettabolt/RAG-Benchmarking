@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 
 log() { echo "[batch $(date '+%H:%M:%S')] $*"; }
 die() { echo "[batch] ERROR: $*" >&2; exit 1; }
+mkdir -p reports
 
 patch_model() {  # path
     sed -i "s|^CHAT_MODEL_PATH=.*|CHAT_MODEL_PATH=$1|" .env

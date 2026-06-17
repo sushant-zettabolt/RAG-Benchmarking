@@ -19,6 +19,7 @@ die() { echo "[run_ab] ERROR: $*" >&2; exit 1; }
 
 [ -f .env ] || die "no .env — run ./setup.sh first"
 CHAT_PORT="$(env_get CHAT_PORT 8081)"
+EMBED_PORT="$(env_get EMBED_PORT 8082)"
 ALLM_PORT="$(env_get ALLM_PORT 3001)"
 LITELLM_PORT="$(env_get LITELLM_PORT 4000)"
 PUSHGW_PORT="$(env_get PUSHGW_PORT 9091)"
@@ -151,11 +152,17 @@ verify_cache_disabled() {  # job
 run_job() {  # job bindir libdir algo
     local job="$1" bindir="$2" libdir="$3" algo="$4"
     log "════ job '$job': swapping chat backend (bindir=$bindir algo=${algo:-unset}) ════"
+    # Embed stays on the baseline binary for BOTH jobs — identical embeddings mean
+    # identical retrieved chunks and identical prompts, keeping the comparison
+    # apple-to-apple (only the chat inference backend differs).
     CHAT_BINDIR="$bindir" CHAT_LIBDIR="${libdir:-$bindir}" \
+        EMBED_BINDIR="$AB_BASELINE_BINDIR" EMBED_LIBDIR="$AB_BASELINE_BINDIR" \
         ZENDNNL_MATMUL_ALGO="$algo" AB_JOB="$job" \
-        $DC_AB up -d --force-recreate --no-deps llama-chat
+        $DC_AB up -d --force-recreate --no-deps llama-chat llama-embed
     wait_for "chat ($job)" "http://localhost:${CHAT_PORT}/health" 120 \
         || { $DC_AB logs --tail 40 llama-chat; die "chat server ($job) did not come up"; }
+    wait_for "embed ($job)" "http://localhost:${EMBED_PORT}/health" 120 \
+        || { $DC_AB logs --tail 40 llama-embed; die "embed server ($job) did not come up"; }
     docker logs nqrag-llama-chat 2>&1 | grep -iE 'zendnn|backend' | head -3 || true
     verify_cache_disabled "$job"
     push_backend "$job"

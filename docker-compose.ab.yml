@@ -34,3 +34,30 @@ services:
     volumes:
       - ${CHAT_BINDIR:?set CHAT_BINDIR (host llama-server build/bin dir)}:/opt/llama/bin:ro
       - ${CHAT_LIBDIR:-${CHAT_BINDIR}}:/opt/llama/lib:ro
+
+  llama-embed:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    cpuset: ${EMBED_CPUSET:-}
+    environment:
+      ZENDNNL_MATMUL_ALGO: ${ZENDNNL_MATMUL_ALGO:-}
+      AB_JOB: ${AB_JOB:-}
+      EMBED_CTX: ${EMBED_CTX:-2048}
+      EMBED_BATCH: ${EMBED_BATCH:-2048}
+      EMBED_UBATCH: ${EMBED_UBATCH:-2048}
+      EMBED_NGL: ${EMBED_NGL:-0}
+      EMBED_THREADS: ${EMBED_THREADS:-}
+      EMBED_MODEL_PATH: ${EMBED_MODEL_PATH:-}
+      EMBED_EXTRA_FLAGS: ${EMBED_EXTRA_FLAGS:-}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        export LD_LIBRARY_PATH=/opt/llama/bin:/opt/llama/lib:$$LD_LIBRARY_PATH
+        [ -z "$$ZENDNNL_MATMUL_ALGO" ] && unset ZENDNNL_MATMUL_ALGO
+        ARGS="--host 0.0.0.0 --port 8080 --embedding --ctx-size $$EMBED_CTX --batch-size $$EMBED_BATCH --ubatch-size $$EMBED_UBATCH --n-gpu-layers $$EMBED_NGL --metrics --alias embed-model --model $$EMBED_MODEL_PATH"
+        if [ -n "$$EMBED_THREADS" ]; then ARGS="$$ARGS --threads $$EMBED_THREADS"; fi
+        ARGS="$$ARGS $$EMBED_EXTRA_FLAGS"
+        echo "[llama-embed AB job=$${AB_JOB:-?} algo=$${ZENDNNL_MATMUL_ALGO:-unset}] /opt/llama/bin/llama-server $$ARGS"
+        exec /opt/llama/bin/llama-server $$ARGS
+    volumes:
+      - ${EMBED_BINDIR:?set EMBED_BINDIR (host llama-server build/bin dir)}:/opt/llama/bin:ro
+      - ${EMBED_LIBDIR:-${EMBED_BINDIR}}:/opt/llama/lib:ro

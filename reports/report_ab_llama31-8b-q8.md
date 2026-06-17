@@ -1,49 +1,51 @@
 # RAG Evaluation + ZenDNN A/B Report — Google Natural Questions
 
-_Dataset: **nq_open** (questions) + **BeIR/nq** (documents) · workspace `nq-bench`_
+_Dataset: **nq_open** (questions) + **BeIR/nq** (documents) · workspace `nq-bench-97555499`_
 
 _Comparison: **baseline** vs **zendnn** — same pipeline, model and queries; only the llama.cpp chat backend differs. Jobs run sequentially._
 
 ## ZenDNN A/B comparison (baseline vs zendnn)
 
+> ⚠️ **Latency comparison not valid:** baseline and zendnn processed different workloads (prompt tokens 3018 vs 3018, completion tokens 71 vs 22). Per-stage latency scales with token count, so the latency speedups below are apples-to-oranges. Compare the per-token throughput table instead, and check why the runs diverged (see Sanity / Evaluation detail — likely a broken job).
+
 ### Per-stage mean latency
 
 | Stage | baseline (s) | zendnn (s) | speedup |
 |---|---|---|---|
-| Query embedding | 0.011 | 0.011 | 1.01x |
-| Retrieval + overhead | 0.200 | 0.196 | 1.02x |
-| Prompt processing (prefill) | 9.406 | 6.003 | 1.57x |
-| Generation (decode) | 4.027 | 4.048 | 1.01x |
-| LLM total (prefill+decode) | 13.433 | 10.051 | 1.34x |
-| Time to first token | 9.617 | 6.209 | 1.55x |
-| End-to-end (total) | 13.639 | 10.252 | 1.33x |
+| Query embedding | 0.060 | 0.054 | 1.12x |
+| Retrieval + overhead | 0.056 | 0.053 | 1.05x |
+| Prompt processing (prefill) | 7.559 | 4.553 | 1.66x |
+| Generation (decode) | 2.210 | 0.667 | 3.31x |
+| LLM total (prefill+decode) | 9.769 | 5.220 | 1.87x |
+| Time to first token | 7.675 | 4.660 | 1.65x |
+| End-to-end (total) | 9.881 | 5.322 | 1.86x |
 
 ### Inference throughput (tokens/sec, mean)
 
 | Metric | baseline | zendnn | speedup |
 |---|---|---|---|
-| Prefill (prompt) t/s | 380.0 | 597.6 | 1.57x |
-| Decode (generation) t/s | 31.8 | 31.6 | 0.99x |
+| Prefill (prompt) t/s | 399.3 | 662.9 | 1.66x |
+| Decode (generation) t/s | 32.1 | 33.0 | 1.03x |
 
 ### Sanity — should be ~equal across jobs (else contamination/contention)
 
 | Metric | baseline | zendnn |
 |---|---|---|
-| Prompt tokens (mean) | 3561.6 | 3561.6 |
-| Completion tokens (mean) | 128 | 128 |
-| Query embedding (s) | 0.011 | 0.011 |
-| Retrieval + overhead (s) | 0.200 | 0.196 |
-| Match rate (LLM judge) | 0% | 0% |
-| Contains reference (lexical) | 40.0% | 50.0% |
+| Prompt tokens (mean) | 3018 | 3018 |
+| Completion tokens (mean) | 71 | 22 |
+| Query embedding (s) | 0.060 | 0.054 |
+| Retrieval + overhead (s) | 0.056 | 0.053 |
+| Match rate (LLM judge) | 100.0% | 100.0% |
+| Contains reference (lexical) | 100.0% | 100.0% |
 
 ### Speedup summary
 
-- Prefill throughput: **1.57x**  (380.0 → 597.6 t/s)
-- Decode throughput:  **0.99x**  (31.8 → 31.6 t/s)
-- LLM inference latency: **1.34x**
-- End-to-end latency: **1.33x**  (13.64s → 10.25s)
+- Prefill throughput: **1.66x**  (399.3 → 662.9 t/s)
+- Decode throughput:  **1.03x**  (32.1 → 33.0 t/s)
+- LLM inference latency: **1.87x**
+- End-to-end latency: **1.86x**  (9.88s → 5.32s)
 
-_ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as expected._
+_Note: throughput (t/s) is the only valid comparison here — the two runs processed different token counts, so latency speedups reflect workload size, not backend speed._
 
 ## Evaluation detail — baseline
 
@@ -51,77 +53,54 @@ _ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as ex
 
 | Metric | Value |
 |---|---|
-| Queries | 10 |
-| Succeeded | 10 |
+| Queries | 1 |
+| Succeeded | 1 |
 | Errored | 0 |
-| **Matched (LLM judge)** | **0 (0%)** |
-| Mean judge score | n/a |
-| Contains reference (lexical) | 4 (40.0%) |
-| Verdicts | none=10 |
+| **Matched (LLM judge)** | **1 (100.0%)** |
+| Mean judge score | 0.800 |
+| Contains reference (lexical) | 1 (100.0%) |
+| Verdicts | correct=1 |
 | Documents ingested | 100/100 |
 | Answerable questions (corpus) | 55 |
-| Total tokens (sum) | 36896 |
-| Tokens/query (prompt / completion) | 3561.6 / 128 |
+| Total tokens (sum) | 3089 |
+| Tokens/query (prompt / completion) | 3018 / 71 |
 
 ### Latency by stage (successful queries)
 
 | Stage | mean (s) | p50 (s) | p95 (s) | min | max |
 |---|---|---|---|---|---|
-| End-to-end (total) | 13.639 | 13.542 | 16.289 | 11.843 | 16.289 |
-| Time to first token | 9.617 | 9.527 | 12.229 | 7.838 | 12.229 |
-| Query embedding | 0.011 | 0.011 | 0.012 | 0.010 | 0.012 |
-| Retrieval + overhead | 0.200 | 0.218 | 0.241 | 0.062 | 0.241 |
-| Prompt processing (prefill) | 9.406 | 9.448 | 12.002 | 7.629 | 12.002 |
-| Generation (decode) | 4.027 | 4.024 | 4.067 | 4.005 | 4.067 |
-| LLM total (prefill+decode) | 13.433 | 13.470 | 16.069 | 11.638 | 16.069 |
+| End-to-end (total) | 9.881 | 9.881 | 9.881 | 9.881 | 9.881 |
+| Time to first token | 7.675 | 7.675 | 7.675 | 7.675 | 7.675 |
+| Query embedding | 0.060 | 0.060 | 0.060 | 0.060 | 0.060 |
+| Retrieval + overhead | 0.056 | 0.056 | 0.056 | 0.056 | 0.056 |
+| Prompt processing (prefill) | 7.559 | 7.559 | 7.559 | 7.559 | 7.559 |
+| Generation (decode) | 2.210 | 2.210 | 2.210 | 2.210 | 2.210 |
+| LLM total (prefill+decode) | 9.769 | 9.769 | 9.769 | 9.769 | 9.769 |
 
 ### Token usage (successful queries)
 
 | | mean | p50 | p95 | min | max |
 |---|---|---|---|---|---|
-| Prompt tokens | 3561.6 | 3635 | 4276 | 3071 | 4276 |
-| Completion tokens | 128 | 128 | 128 | 128 | 128 |
-| Total tokens | 3689.6 | 3763 | 4404 | 3199 | 4404 |
+| Prompt tokens | 3018 | 3018 | 3018 | 3018 | 3018 |
+| Completion tokens | 71 | 71 | 71 | 71 | 71 |
+| Total tokens | 3089 | 3089 | 3089 | 3089 | 3089 |
 
-### Failed / incorrect queries (10)
+### Failed / incorrect queries (0)
 
-| Q# | question | verdict | reason |
-|---|---|---|---|
-| 0 | when was the last time anyone was on the moon | None |  |
-| 1 | who wrote he ain't heavy he's my brother lyrics | None |  |
-| 2 | how many seasons of the bastard executioner are there | None |  |
-| 3 | when did the eagles win last super bowl | None |  |
-| 4 | who won last year's ncaa women's basketball | None |  |
-| 5 | when did the isle of wight become an island | None |  |
-| 6 | love yourself by justin bieber is about who | None |  |
-| 7 | who was the ruler of england in 1616 | None |  |
-| 8 | what is the hot coffee mod in san andreas | None |  |
-| 9 | what is the maximum data rate for the 802.11a standard select one | None |  |
+_None — all queries matched._
 
 ### Example answers
 
 #### Correct
 
-_No correct examples._
+**Q0: when was the last time anyone was on the moon**  
+- expected: _14 December 1972 UTC | December 1972_  
+- got: Unfortunately, the provided context does not contain any information about the last time anyone was on the moon. However, I can provide you with the information that the last time humans visited the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt.  
+- score: 0.80 (correct) — Provides correct date and context, but lacks precision in the time.
 
 #### Incorrect
 
-**Q0: when was the last time anyone was on the moon**  
-- expected: _14 December 1972 UTC | December 1972_  
-- got: Unfortunately, I don't see any information in the provided contexts about the last time anyone was on the moon. The contexts appear to cover a wide range of topics, including sports, music, politics, history, and more, but none of them specifically address space exploration or the moon. If you're looking for information on when the last time someone was on the moon, I'd be happy to try and help you find it elsewhere. 
-
-However, I can tell you that the last time humans visited the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald  
-- score: n/a (None) — 
-
-**Q1: who wrote he ain't heavy he's my brother lyrics**  
-- expected: _Bobby Scott | Bob Russell_  
-- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. It was originally recorded by Kelly Gordon in 1969, but it was made famous by The Hollies, who released a version in 1969 that became a worldwide hit. The song has since been covered by many other artists, including Neil Diamond, who had a hit version in 1970. However, the original lyrics were written by Bobby Scott and Bob Russell. Bob Russell was an American lyricist who wrote many popular songs, including "He Ain't Heavy, He's My Brother", and Bobby Scott was an American  
-- score: n/a (None) — 
-
-**Q2: how many seasons of the bastard executioner are there**  
-- expected: _one | one season_  
-- got: I am unable to verify how many seasons of The Bastard Executioner are there. I do not have access to a search engine to find this information. The Bastard Executioner is a series that aired on FX from 2015. It ran for 1 season and 10 episodes. It was cancelled after the first season. It is a historical drama television series that premiered on September 15, 2015. It is based on a medieval story and was created by Kurt Sutter. The series follows the story of a knight who is tasked with serving as the executioner for a local lord. The show was well-received  
-- score: n/a (None) — 
+_No incorrect examples._
 
 
 ## Evaluation detail — zendnn
@@ -130,81 +109,54 @@ However, I can tell you that the last time humans visited the moon was during th
 
 | Metric | Value |
 |---|---|
-| Queries | 10 |
-| Succeeded | 10 |
+| Queries | 1 |
+| Succeeded | 1 |
 | Errored | 0 |
-| **Matched (LLM judge)** | **0 (0%)** |
-| Mean judge score | n/a |
-| Contains reference (lexical) | 5 (50.0%) |
-| Verdicts | none=10 |
+| **Matched (LLM judge)** | **1 (100.0%)** |
+| Mean judge score | 1.000 |
+| Contains reference (lexical) | 1 (100.0%) |
+| Verdicts | correct=1 |
 | Documents ingested | 100/100 |
 | Answerable questions (corpus) | 55 |
-| Total tokens (sum) | 36896 |
-| Tokens/query (prompt / completion) | 3561.6 / 128 |
+| Total tokens (sum) | 3040 |
+| Tokens/query (prompt / completion) | 3018 / 22 |
 
 ### Latency by stage (successful queries)
 
 | Stage | mean (s) | p50 (s) | p95 (s) | min | max |
 |---|---|---|---|---|---|
-| End-to-end (total) | 10.252 | 10.107 | 12.227 | 8.863 | 12.227 |
-| Time to first token | 6.209 | 6.062 | 8.143 | 4.863 | 8.143 |
-| Query embedding | 0.011 | 0.011 | 0.011 | 0.010 | 0.011 |
-| Retrieval + overhead | 0.196 | 0.213 | 0.238 | 0.058 | 0.238 |
-| Prompt processing (prefill) | 6.003 | 5.989 | 7.923 | 4.658 | 7.923 |
-| Generation (decode) | 4.048 | 4.049 | 4.092 | 4.003 | 4.092 |
-| LLM total (prefill+decode) | 10.051 | 10.038 | 12.015 | 8.661 | 12.015 |
+| End-to-end (total) | 5.322 | 5.322 | 5.322 | 5.322 | 5.322 |
+| Time to first token | 4.660 | 4.660 | 4.660 | 4.660 | 4.660 |
+| Query embedding | 0.054 | 0.054 | 0.054 | 0.054 | 0.054 |
+| Retrieval + overhead | 0.053 | 0.053 | 0.053 | 0.053 | 0.053 |
+| Prompt processing (prefill) | 4.553 | 4.553 | 4.553 | 4.553 | 4.553 |
+| Generation (decode) | 0.667 | 0.667 | 0.667 | 0.667 | 0.667 |
+| LLM total (prefill+decode) | 5.220 | 5.220 | 5.220 | 5.220 | 5.220 |
 
 ### Token usage (successful queries)
 
 | | mean | p50 | p95 | min | max |
 |---|---|---|---|---|---|
-| Prompt tokens | 3561.6 | 3635 | 4276 | 3071 | 4276 |
-| Completion tokens | 128 | 128 | 128 | 128 | 128 |
-| Total tokens | 3689.6 | 3763 | 4404 | 3199 | 4404 |
+| Prompt tokens | 3018 | 3018 | 3018 | 3018 | 3018 |
+| Completion tokens | 22 | 22 | 22 | 22 | 22 |
+| Total tokens | 3040 | 3040 | 3040 | 3040 | 3040 |
 
-### Failed / incorrect queries (10)
+### Failed / incorrect queries (0)
 
-| Q# | question | verdict | reason |
-|---|---|---|---|
-| 0 | when was the last time anyone was on the moon | None |  |
-| 1 | who wrote he ain't heavy he's my brother lyrics | None |  |
-| 2 | how many seasons of the bastard executioner are there | None |  |
-| 3 | when did the eagles win last super bowl | None |  |
-| 4 | who won last year's ncaa women's basketball | None |  |
-| 5 | when did the isle of wight become an island | None |  |
-| 6 | love yourself by justin bieber is about who | None |  |
-| 7 | who was the ruler of england in 1616 | None |  |
-| 8 | what is the hot coffee mod in san andreas | None |  |
-| 9 | what is the maximum data rate for the 802.11a standard select one | None |  |
+_None — all queries matched._
 
 ### Example answers
 
 #### Correct
 
-_No correct examples._
+**Q0: when was the last time anyone was on the moon**  
+- expected: _14 December 1972 UTC | December 1972_  
+- got: The last time anyone was on the moon was during the Apollo 17 mission in December 1972.  
+- score: 1.00 (correct) — Matches reference date and provides additional context.
 
 #### Incorrect
 
-**Q0: when was the last time anyone was on the moon**  
-- expected: _14 December 1972 UTC | December 1972_  
-- got: The last time humans were on the moon was during the Apollo 17 mission in December 1972. NASA astronauts Eugene Cernan and Harrison Schmitt spent three days on the lunar surface, conducting scientific experiments and exploring the Taurus-Littrow valley. They returned to Earth on December 19, 1972.
-
-Since then, there have been no manned missions to the moon. However, there are plans to return humans to the moon in the near future. NASA's Artemis program aims to send the first woman and the next man to the moon by 2025, and to establish a sustainable presence on the lunar surface by  
-- score: n/a (None) — 
-
-**Q1: who wrote he ain't heavy he's my brother lyrics**  
-- expected: _Bobby Scott | Bob Russell_  
-- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. The song was originally recorded by Kelly Gordon in 1969, but the most famous version was recorded by The Hollies in 1969, and later by Neil Diamond in 1970. The song was written for Kelly Gordon, but he was not able to secure the rights to the song, which ultimately led to The Hollies and Neil Diamond recording the song. The lyrics are based on a phrase that was first spoken by a young boy named Joey Dwyer, who was a patient at a hospital where Bob Russell's  
-- score: n/a (None) — 
-
-**Q2: how many seasons of the bastard executioner are there**  
-- expected: _one | one season_  
-- got: I am unable to identify any information regarding the number of seasons for The Bastard Executioner. If you could provide more details or context about the series, I'll do my best to provide a more accurate answer. However, I can suggest some options to find the information you're looking for.
-
-The Bastard Executioner is a short-lived TV series that aired from September 15, 2015, to November 17, 2015. It had a total of 10 episodes in its first and only season. I was unable to find any information on further seasons of the show. 
-
-If you're looking for more information on  
-- score: n/a (None) — 
+_No incorrect examples._
 
 
 ---

@@ -12,11 +12,10 @@ services:
     image: nqrag-llama:local
     container_name: nqrag-llama-chat
     user: "${HOST_UID:-1002}:${HOST_GID:-1002}"
-    # CPU pinning (empty = no pin). On a multi-socket box pin to ONE NUMA node's
-    # cores and set CHAT_MEMBIND to that node so memory is local too.
+    # CPU pinning via Docker cpuset (cgroup). Both llama-chat and llama-embed
+    # share socket 1 (96-191); they are naturally sequential in the RAG pipeline
+    # so they rarely compete. SYS_NICE is kept for OMP thread priority.
     cpuset: ${CHAT_CPUSET:-}
-    # SYS_NICE lets numactl set the memory policy (set_mempolicy/mbind) — without
-    # it the default seccomp profile blocks --membind with "Operation not permitted".
     cap_add:
       - SYS_NICE
     environment:
@@ -58,6 +57,7 @@ services:
     image: nqrag-llama:local
     container_name: nqrag-llama-embed
     user: "${HOST_UID:-1002}:${HOST_GID:-1002}"
+    # Shares socket 1 cpuset with llama-chat (see llama-chat comment above).
     cpuset: ${EMBED_CPUSET:-}
     cap_add:
       - SYS_NICE
