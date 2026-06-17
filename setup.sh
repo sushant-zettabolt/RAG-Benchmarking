@@ -11,7 +11,15 @@ DC="docker compose"
 
 # ── .env ─────────────────────────────────────────────────────────────────────
 if [ ! -f .env ]; then
-    cp .env.example .env
+    # Strip inline comments (KEY=value  # comment) so no comment text leaks into values.
+    python3 -c "
+import re, sys
+for line in sys.stdin:
+    s = line.rstrip('\n')
+    if '=' in s and not s.lstrip().startswith('#'):
+        s = re.sub(r'\s+#.*$', '', s)
+    print(s)
+" < .env.example > .env
     echo "[setup] created .env from .env.example"
 fi
 

@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 DC_BASE="docker compose"
 DC_AB="docker compose -f docker-compose.yml -f docker-compose.ab.yml"
 
-env_get() { local v; v="$(grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2-)"; [ -z "$v" ] && echo "$2" || echo "$v"; }
+env_get() { local v; v="$(grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | sed 's/[[:space:]]*#.*//' | xargs)"; [ -z "$v" ] && echo "$2" || echo "$v"; }
 log() { echo "[run_ab] $*"; }
 die() { echo "[run_ab] ERROR: $*" >&2; exit 1; }
 

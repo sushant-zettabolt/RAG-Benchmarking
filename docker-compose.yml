@@ -8,8 +8,10 @@ services:
   # Models are NOT downloaded — supply your own GGUF via MODELS_DIR (mounted at
   # /models) and point CHAT_MODEL_PATH at it.
   llama-chat:
-    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    build: {context: docker, dockerfile: Dockerfile.llama}
+    image: nqrag-llama:local
     container_name: nqrag-llama-chat
+    user: "${HOST_UID:-1002}:${HOST_GID:-1002}"
     # CPU pinning (empty = no pin). On a multi-socket box pin to ONE NUMA node's
     # cores and set CHAT_MEMBIND to that node so memory is local too.
     cpuset: ${CHAT_CPUSET:-}
@@ -19,7 +21,7 @@ services:
       - SYS_NICE
     environment:
       CHAT_MODEL_PATH: ${CHAT_MODEL_PATH:-}
-      CHAT_CTX: ${CHAT_CTX:-8192}
+      CHAT_CTX: ${CHAT_CTX:-4096}
       CHAT_BATCH: ${CHAT_BATCH:-512}
       CHAT_UBATCH: ${CHAT_UBATCH:-512}
       CHAT_PARALLEL: ${CHAT_PARALLEL:-1}
@@ -66,8 +68,10 @@ services:
 
   # ── Embedding server ───────────────────────────────────────────────────────
   llama-embed:
-    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    build: {context: docker, dockerfile: Dockerfile.llama}
+    image: nqrag-llama:local
     container_name: nqrag-llama-embed
+    user: "${HOST_UID:-1002}:${HOST_GID:-1002}"
     cpuset: ${EMBED_CPUSET:-}
     cap_add:
       - SYS_NICE
@@ -235,6 +239,7 @@ services:
     build: ./harness
     image: nqrag-harness:local
     container_name: nqrag-harness
+    user: "${HOST_UID:-1002}:${HOST_GID:-1002}"
     cpuset: ${HARNESS_CPUSET:-}
     profiles: ["tools"]
     environment:
