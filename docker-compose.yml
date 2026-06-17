@@ -21,7 +21,7 @@ services:
       - SYS_NICE
     environment:
       CHAT_MODEL_PATH: ${CHAT_MODEL_PATH:-}
-      CHAT_CTX: ${CHAT_CTX:-4096}
+      CHAT_CTX: ${CHAT_CTX:-8192}
       CHAT_BATCH: ${CHAT_BATCH:-512}
       CHAT_UBATCH: ${CHAT_UBATCH:-512}
       CHAT_PARALLEL: ${CHAT_PARALLEL:-1}

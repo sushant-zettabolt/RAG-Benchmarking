@@ -36,12 +36,6 @@ if [ "$TEST_ONLY" = "1" ]; then
     exit 0
 fi
 
-# All 6 models.
-run_model "llama31-8b-bf16"    "/models/Llama-3.1-8B-Instruct-BF16.gguf"
-run_model "gemma4-4b-bf16"     "/models/Gemma-4-E2B-It-4.6B-BF16.gguf"
-run_model "mixtral-8x7b-bf16"  "/models/Mixtral-8x7B-Instruct-v0.1-BF16.gguf"
-run_model "gpt-oss-20b-bf16"   "/models/gpt-oss-20B-BF16.gguf"
-run_model "mixtral-8x7b-q8"    "/models/Q8_0_models/Mixtral-8x7B-Instruct-v0.1-Q8_0.gguf"
-run_model "llama31-8b-q8"      "/models/Q8_0_models/Llama-3.1-8B-Instruct-q8_0.gguf"
+run_model "llama31-8b-q8" "/models/Q8_0_models/Llama-3.1-8B-Instruct-q8_0.gguf"
 
 log "🏁 All models complete. Reports in reports/"

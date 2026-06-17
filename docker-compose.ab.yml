@@ -15,7 +15,7 @@ services:
     environment:
       ZENDNNL_MATMUL_ALGO: ${ZENDNNL_MATMUL_ALGO:-}
       AB_JOB: ${AB_JOB:-}
-      CHAT_CTX: ${CHAT_CTX:-4096}
+      CHAT_CTX: ${CHAT_CTX:-8192}
       CHAT_NGL: ${CHAT_NGL:-0}
       CHAT_PARALLEL: ${CHAT_PARALLEL:-1}
       CHAT_THREADS: ${CHAT_THREADS:-}
