@@ -9,20 +9,6 @@ log() { echo "[batch $(date '+%H:%M:%S')] $*"; }
 
 sed -i "s|^CHAT_MODEL_PATH=.*|CHAT_MODEL_PATH=/models/Q8_0_models/Llama-3.1-8B-Instruct-q8_0.gguf|" .env
 
-# Quick-test mode: 1 measured query, 3 warmup queries per job.
-# Warmup lets ZenDNN JIT its kernels before the timed query — without it the
-# first query pays the full JIT cost and looks artificially slow.
-# Restore originals after the run regardless of success/failure.
-ORIGINAL_EVAL_LIMIT="$(grep -E '^EVAL_LIMIT=' .env | cut -d= -f2-)"
-ORIGINAL_WARMUP="$(grep -E '^WARMUP=' .env | cut -d= -f2-)"
-restore_eval_settings() {
-    sed -i "s|^EVAL_LIMIT=.*|EVAL_LIMIT=${ORIGINAL_EVAL_LIMIT}|" .env
-    sed -i "s|^WARMUP=.*|WARMUP=${ORIGINAL_WARMUP}|" .env
-}
-trap restore_eval_settings EXIT
-sed -i "s|^EVAL_LIMIT=.*|EVAL_LIMIT=1|" .env
-sed -i "s|^WARMUP=.*|WARMUP=3|" .env
-
 log "══════════════ MODEL: llama31-8b-q8 ══════════════"
 bash run_ab.sh
 

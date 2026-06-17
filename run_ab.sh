@@ -63,10 +63,6 @@ if [ -n "$AB_ZENDNN_LIBDIR" ] && [ ! -e "$AB_ZENDNN_LIBDIR/libzendnnl.so" ]; the
     die "libzendnnl.so not found in AB_ZENDNN_LIBDIR=$AB_ZENDNN_LIBDIR (the zendnn binary links it at load time)"
 fi
 
-log "ensuring base services are up (embed/litellm/prometheus/anythingllm) ..."
-$DC_BASE up -d llama-embed litellm prometheus anythingllm >/dev/null
-[ -f data/ingest_metadata.json ] || die "no ingested data — run: make ingest"
-
 wait_for() {  # name url tries
     echo -n "[run_ab] waiting for $1 "
     for _ in $(seq 1 "${3:-120}"); do
@@ -75,6 +71,16 @@ wait_for() {  # name url tries
     done
     echo " TIMEOUT"; return 1
 }
+
+log "ensuring all services are up (chat + embed + support) ..."
+$DC_BASE up -d llama-chat llama-embed litellm prometheus pushgateway anythingllm >/dev/null
+[ -f data/ingest_metadata.json ] || die "no ingested data — run: make ingest"
+
+wait_for "llama-chat"  "http://localhost:${CHAT_PORT}/health"  240
+wait_for "llama-embed" "http://localhost:${EMBED_PORT}/health" 120
+wait_for "litellm"     "http://localhost:${LITELLM_PORT}/health/readiness" 60
+wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
+log "all services healthy — embed server stays up for the entire run"
 
 # ── fixed-decode mode ────────────────────────────────────────────────────────
 # Point AnythingLLM at the `chat-model-bench` LiteLLM model (ignore_eos +
@@ -152,17 +158,16 @@ verify_cache_disabled() {  # job
 run_job() {  # job bindir libdir algo
     local job="$1" bindir="$2" libdir="$3" algo="$4"
     log "════ job '$job': swapping chat backend (bindir=$bindir algo=${algo:-unset}) ════"
-    # Embed stays on the baseline binary for BOTH jobs — identical embeddings mean
-    # identical retrieved chunks and identical prompts, keeping the comparison
-    # apple-to-apple (only the chat inference backend differs).
+    # Only recreate llama-chat. The embed server stays untouched (always baseline
+    # binary, started by the $DC_BASE up earlier) — avoids the 501 race where a
+    # restarting embed server briefly rejects embedding requests.
+    # EMBED_BINDIR is passed for compose-file validation only; embed is NOT recreated.
     CHAT_BINDIR="$bindir" CHAT_LIBDIR="${libdir:-$bindir}" \
         EMBED_BINDIR="$AB_BASELINE_BINDIR" EMBED_LIBDIR="$AB_BASELINE_BINDIR" \
         ZENDNNL_MATMUL_ALGO="$algo" AB_JOB="$job" \
-        $DC_AB up -d --force-recreate --no-deps llama-chat llama-embed
+        $DC_AB up -d --force-recreate --no-deps llama-chat
     wait_for "chat ($job)" "http://localhost:${CHAT_PORT}/health" 120 \
         || { $DC_AB logs --tail 40 llama-chat; die "chat server ($job) did not come up"; }
-    wait_for "embed ($job)" "http://localhost:${EMBED_PORT}/health" 120 \
-        || { $DC_AB logs --tail 40 llama-embed; die "embed server ($job) did not come up"; }
     docker logs nqrag-llama-chat 2>&1 | grep -iE 'zendnn|backend' | head -3 || true
     verify_cache_disabled "$job"
     push_backend "$job"
