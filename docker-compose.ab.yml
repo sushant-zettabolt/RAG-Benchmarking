@@ -8,9 +8,7 @@
 services:
   llama-chat:
     image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}   # runtime only
-    # Pin the chat server to one NUMA node (set CHAT_CPUSET, e.g. "96-191") so
-    # decode isn't starved by cross-node memory traffic — essential for a fair
-    # ZenDNN A/B on a multi-socket box. Empty = no pinning.
+    # CPU pinning via Docker cpuset — same as the base service.
     cpuset: ${CHAT_CPUSET:-}
     environment:
       ZENDNNL_MATMUL_ALGO: ${ZENDNNL_MATMUL_ALGO:-}
@@ -21,8 +19,6 @@ services:
       CHAT_THREADS: ${CHAT_THREADS:-}
       CHAT_MODEL_PATH: ${CHAT_MODEL_PATH:-}
       CHAT_EXTRA_FLAGS: ${CHAT_EXTRA_FLAGS:-}
-      CHAT_PHYSCPUBIND: ${CHAT_CPUSET:-}
-      CHAT_MEMBIND: ${CHAT_MEMBIND:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
@@ -33,16 +29,8 @@ services:
         ARGS="--host 0.0.0.0 --port 8080 --ctx-size $$CHAT_CTX --n-gpu-layers $$CHAT_NGL --parallel $$CHAT_PARALLEL --no-mmap -fa on --metrics --alias chat-model --model $$CHAT_MODEL_PATH"
         if [ -n "$$CHAT_THREADS" ]; then ARGS="$$ARGS --threads $$CHAT_THREADS"; fi
         ARGS="$$ARGS $$CHAT_EXTRA_FLAGS"
-        NA=""
-        if [ -n "$$CHAT_PHYSCPUBIND" ]; then NA="$$NA --physcpubind=$$CHAT_PHYSCPUBIND"; fi
-        if [ -n "$$CHAT_MEMBIND" ]; then NA="$$NA --membind=$$CHAT_MEMBIND"; fi
-        NUMA=""
-        if [ -n "$$NA" ]; then
-          if ! command -v numactl >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq numactl; fi
-          NUMA="numactl$$NA"
-        fi
-        echo "[llama-chat AB job=$${AB_JOB:-?} algo=$${ZENDNNL_MATMUL_ALGO:-unset}] $$NUMA /opt/llama/bin/llama-server $$ARGS"
-        exec $$NUMA /opt/llama/bin/llama-server $$ARGS
+        echo "[llama-chat AB job=$${AB_JOB:-?} algo=$${ZENDNNL_MATMUL_ALGO:-unset}] /opt/llama/bin/llama-server $$ARGS"
+        exec /opt/llama/bin/llama-server $$ARGS
     volumes:
       - ${CHAT_BINDIR:?set CHAT_BINDIR (host llama-server build/bin dir)}:/opt/llama/bin:ro
       - ${CHAT_LIBDIR:-${CHAT_BINDIR}}:/opt/llama/lib:ro

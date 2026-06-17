@@ -27,33 +27,19 @@ services:
       CHAT_PARALLEL: ${CHAT_PARALLEL:-1}
       CHAT_NGL: ${CHAT_NGL:-0}
       CHAT_THREADS: ${CHAT_THREADS:-}
-      CHAT_MEMBIND: ${CHAT_MEMBIND:-}
-      # CPUs numactl pins to (in-process); reuses the same cores as `cpuset` above.
-      CHAT_PHYSCPUBIND: ${CHAT_CPUSET:-}
       CHAT_EXTRA_FLAGS: ${CHAT_EXTRA_FLAGS:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        if [ -z "$$CHAT_MODEL_PATH" ]; then echo "ERROR: CHAT_MODEL_PATH is not set. Put your chat GGUF under MODELS_DIR and set CHAT_MODEL_PATH to its path under /models (e.g. /models/model.gguf)." >&2; exit 1; fi
-        if [ ! -f "$$CHAT_MODEL_PATH" ]; then echo "ERROR: chat model not found at $$CHAT_MODEL_PATH. Check MODELS_DIR mount and CHAT_MODEL_PATH." >&2; exit 1; fi
-        # OpenMP thread affinity: bind threads close and place one per physical core
-        # so all threads stay on the pinned NUMA node (cpuset). Matches the A/B overlay.
+        if [ -z "$$CHAT_MODEL_PATH" ]; then echo "ERROR: CHAT_MODEL_PATH is not set." >&2; exit 1; fi
+        if [ ! -f "$$CHAT_MODEL_PATH" ]; then echo "ERROR: chat model not found at $$CHAT_MODEL_PATH." >&2; exit 1; fi
         export OMP_PROC_BIND=close
         export OMP_PLACES=cores
         ARGS="--host 0.0.0.0 --port 8080 --ctx-size $$CHAT_CTX --n-gpu-layers $$CHAT_NGL --parallel $$CHAT_PARALLEL --no-mmap -fa on --metrics --alias chat-model --model $$CHAT_MODEL_PATH"
         if [ -n "$$CHAT_THREADS" ]; then ARGS="$$ARGS --threads $$CHAT_THREADS"; fi
         ARGS="$$ARGS $$CHAT_EXTRA_FLAGS"
-        NA=""
-        if [ -n "$$CHAT_PHYSCPUBIND" ]; then NA="$$NA --physcpubind=$$CHAT_PHYSCPUBIND"; fi
-        if [ -n "$$CHAT_MEMBIND" ]; then NA="$$NA --membind=$$CHAT_MEMBIND"; fi
-        NUMA=""
-        if [ -n "$$NA" ]; then
-          if ! command -v numactl >/dev/null 2>&1; then echo "[llama-chat] installing numactl ..."; apt-get update -qq && apt-get install -y -qq numactl || { echo "ERROR: failed to install numactl" >&2; exit 1; }; fi
-          NUMA="numactl$$NA"
-          echo "[llama-chat] NUMA bind:$$NA"
-        fi
-        echo "[llama-chat] $$NUMA /app/llama-server $$ARGS"
-        exec $$NUMA /app/llama-server $$ARGS
+        echo "[llama-chat] /app/llama-server $$ARGS"
+        exec /app/llama-server $$ARGS
     volumes:
       - ${MODELS_DIR:-./models}:/models:ro
     ports:
@@ -82,28 +68,17 @@ services:
       EMBED_UBATCH: ${EMBED_UBATCH:-2048}
       EMBED_NGL: ${EMBED_NGL:-0}
       EMBED_THREADS: ${EMBED_THREADS:-}
-      EMBED_MEMBIND: ${EMBED_MEMBIND:-}
-      EMBED_PHYSCPUBIND: ${EMBED_CPUSET:-}
       EMBED_EXTRA_FLAGS: ${EMBED_EXTRA_FLAGS:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        if [ -z "$$EMBED_MODEL_PATH" ]; then echo "ERROR: EMBED_MODEL_PATH is not set. Put your embedding GGUF under MODELS_DIR and set EMBED_MODEL_PATH to its path under /models (e.g. /models/embed.gguf)." >&2; exit 1; fi
-        if [ ! -f "$$EMBED_MODEL_PATH" ]; then echo "ERROR: embedding model not found at $$EMBED_MODEL_PATH. Check MODELS_DIR mount and EMBED_MODEL_PATH." >&2; exit 1; fi
+        if [ -z "$$EMBED_MODEL_PATH" ]; then echo "ERROR: EMBED_MODEL_PATH is not set." >&2; exit 1; fi
+        if [ ! -f "$$EMBED_MODEL_PATH" ]; then echo "ERROR: embedding model not found at $$EMBED_MODEL_PATH." >&2; exit 1; fi
         ARGS="--host 0.0.0.0 --port 8080 --embedding --ctx-size $$EMBED_CTX --batch-size $$EMBED_BATCH --ubatch-size $$EMBED_UBATCH --n-gpu-layers $$EMBED_NGL --metrics --alias embed-model --model $$EMBED_MODEL_PATH"
         if [ -n "$$EMBED_THREADS" ]; then ARGS="$$ARGS --threads $$EMBED_THREADS"; fi
         ARGS="$$ARGS $$EMBED_EXTRA_FLAGS"
-        NA=""
-        if [ -n "$$EMBED_PHYSCPUBIND" ]; then NA="$$NA --physcpubind=$$EMBED_PHYSCPUBIND"; fi
-        if [ -n "$$EMBED_MEMBIND" ]; then NA="$$NA --membind=$$EMBED_MEMBIND"; fi
-        NUMA=""
-        if [ -n "$$NA" ]; then
-          if ! command -v numactl >/dev/null 2>&1; then echo "[llama-embed] installing numactl ..."; apt-get update -qq && apt-get install -y -qq numactl || { echo "ERROR: failed to install numactl" >&2; exit 1; }; fi
-          NUMA="numactl$$NA"
-          echo "[llama-embed] NUMA bind:$$NA"
-        fi
-        echo "[llama-embed] $$NUMA /app/llama-server $$ARGS"
-        exec $$NUMA /app/llama-server $$ARGS
+        echo "[llama-embed] /app/llama-server $$ARGS"
+        exec /app/llama-server $$ARGS
     volumes:
       - ${MODELS_DIR:-./models}:/models:ro
     ports:
