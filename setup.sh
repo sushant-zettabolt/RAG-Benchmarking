@@ -28,6 +28,8 @@ PROM_PORT="$(env_get PROM_PORT 9090)"
 ALLM_PORT="$(env_get ALLM_PORT 3001)"
 MASTER_KEY="$(env_get LITELLM_MASTER_KEY sk-bench-master)"
 CHAT_CTX="$(env_get CHAT_CTX 8192)"
+EMBED_CHUNK_WORDS="$(env_get EMBED_CHUNK_WORDS 512)"
+EMBED_CHUNK_OVERLAP_WORDS="$(env_get EMBED_CHUNK_OVERLAP_WORDS 100)"
 ALLM_KEY="$(env_get ALLM_KEY '')"
 
 # ── models must be supplied locally (nothing is downloaded) ──────────────────
@@ -85,6 +87,8 @@ $DC exec -T \
     -e ALLM_KEY="$ALLM_KEY" \
     -e LITELLM_MASTER_KEY="$MASTER_KEY" \
     -e CHAT_CTX="$CHAT_CTX" \
+    -e EMBED_CHUNK_WORDS="$EMBED_CHUNK_WORDS" \
+    -e EMBED_CHUNK_OVERLAP_WORDS="$EMBED_CHUNK_OVERLAP_WORDS" \
     anythingllm python3 - < scripts/seed_anythingllm.py
 
 echo "[setup] restarting AnythingLLM to apply settings ..."

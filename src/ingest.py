@@ -35,10 +35,17 @@ CORPUS_DATASET = os.environ.get("CORPUS_DATASET", "BeIR/nq")
 DOC_N          = C.envi("DOC_N", 100)
 EVAL_N         = C.envi("EVAL_N", 100)
 CORPUS_SCAN    = C.envi("CORPUS_SCAN", 20000)
-# Retrieval: how many chunks to stuff into each prompt. Higher topN (and a low
-# similarity threshold so they actually get included) yields larger prompts =
-# a heavier, more representative prefill workload for the ZenDNN A/B.
-RETRIEVAL_TOPN = C.envi("RETRIEVAL_TOPN", 20)
+# NQ passages are short (~120 tokens), so one passage per document never fills a
+# 512-token chunk. We pack consecutive passages into each document until it is at
+# least DOC_TARGET_TOKENS, so the embedder splits it into full ~512-token chunks;
+# retrieving topN of those then yields a multi-thousand-token prompt (heavy
+# prefill). topN * chunk_size sets the prompt size: 8 * 512 ~= 4096 tokens.
+DOC_TARGET_TOKENS = C.envi("DOC_TARGET_TOKENS", 4096)
+# Retrieval: how many chunks to stuff into each prompt. With ~512-token chunks
+# (set in scripts/seed_anythingllm.py), topN=6-8 yields a ~3-4k-token prompt =
+# a solid, representative prefill workload. A low similarity threshold ensures
+# the chunks actually get included.
+RETRIEVAL_TOPN = C.envi("RETRIEVAL_TOPN", 8)
 RETRIEVAL_SIM_THRESHOLD = C.envf("RETRIEVAL_SIM_THRESHOLD", 0.0)
 
 
@@ -67,55 +74,73 @@ def load_corpus_passages():
     return out
 
 
-def build_corpus(questions, passages):
-    """Choose DOC_N passages, preferring ones that contain a reference answer.
-    Marks each question answerable if a passage carrying its answer is included."""
-    lowered = [(p["title"] + " " + p["text"]).lower() for p in passages]
-    chosen_idx = []          # passage indices, in selection order
-    seen = set()
+def _est_tokens(text):
+    """Rough token count (~0.75 words/token) — only used to size documents."""
+    return int(len(text.split()) / 0.75)
 
+
+def build_corpus(questions, passages):
+    """Pack NQ passages into DOC_N documents of >= DOC_TARGET_TOKENS each, so the
+    embedder splits them into full ~512-token chunks and retrieving topN yields a
+    multi-thousand-token prompt (a heavy prefill). Answer-bearing passages are
+    packed first so questions stay answerable, and we track which document each
+    answer landed in."""
+    lowered = [(p["title"] + " " + p["text"]).lower() for p in passages]
+
+    # 1. order passages: answer-bearing first (deduped), then the rest in corpus
+    #    order. Each question records the passage index that answers it.
+    ordered, seen = [], set()
     if CORPUS_SCAN:
         for q in questions:
             terms = [a.lower() for a in q["answers"] if len(a) >= 3]
             if not terms:
                 continue
             for pi, hay in enumerate(lowered):
-                if pi in seen:
-                    if any(t in lowered[pi] for t in terms):
-                        q["doc_idx"] = pi
-                        q["answerable"] = True
-                        break
-                    continue
                 if any(t in hay for t in terms):
-                    seen.add(pi)
-                    chosen_idx.append(pi)
+                    if pi not in seen:
+                        seen.add(pi)
+                        ordered.append(pi)
                     q["doc_idx"] = pi
-                    q["answerable"] = True
                     break
-
-    # cap answer-bearing passages at DOC_N, then top up with leading passages
-    chosen_idx = chosen_idx[:DOC_N]
-    chosen_set = set(chosen_idx)
     for pi in range(len(passages)):
-        if len(chosen_idx) >= DOC_N:
+        if pi not in seen:
+            seen.add(pi)
+            ordered.append(pi)
+
+    # 2. greedily pack passages into documents of >= DOC_TARGET_TOKENS tokens.
+    docs, pidx_to_doc = [], {}
+    parts, pidxs, tok = [], [], 0
+
+    def flush():
+        nonlocal parts, pidxs, tok
+        if not parts:
+            return
+        fname = f"doc_{len(docs):04d}.txt"
+        docs.append((fname, "\n\n".join(parts) + "\n"))
+        for pi in pidxs:
+            pidx_to_doc[pi] = fname
+        parts, pidxs, tok = [], [], 0
+
+    for pi in ordered:
+        if len(docs) >= DOC_N:
             break
-        if pi not in chosen_set:
-            chosen_idx.append(pi)
-            chosen_set.add(pi)
-
-    # map passage index -> output doc filename, finalize answerable flags
-    idx_to_doc = {pi: f"doc_{n:04d}.txt" for n, pi in enumerate(chosen_idx)}
-    for q in questions:
-        di = q.get("doc_idx")
-        q["answerable"] = di in idx_to_doc if di is not None else False
-        q["doc_file"] = idx_to_doc.get(di) if q["answerable"] else None
-        q.pop("doc_idx", None)
-
-    docs = []
-    for pi in chosen_idx:
         p = passages[pi]
-        body = (f"# {p['title']}\n\n{p['text']}\n" if p["title"] else p["text"] + "\n")
-        docs.append((idx_to_doc[pi], body))
+        part = f"# {p['title']}\n\n{p['text']}" if p["title"] else p["text"]
+        parts.append(part)
+        pidxs.append(pi)
+        tok += _est_tokens(part)
+        if tok >= DOC_TARGET_TOKENS:
+            flush()
+    if len(docs) < DOC_N:
+        flush()   # trailing partial document
+
+    # 3. finalize answerable flags: a question is answerable iff its answer
+    #    passage actually landed in one of the written documents.
+    for q in questions:
+        di = q.pop("doc_idx", None)
+        q["doc_file"] = pidx_to_doc.get(di) if di is not None else None
+        q["answerable"] = q["doc_file"] is not None
+
     return docs
 
 

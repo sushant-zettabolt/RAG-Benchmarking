@@ -26,10 +26,15 @@ SLUG="$(env_get SLUG nq-bench)"
 ALLM_KEY="$(env_get ALLM_KEY '')"
 CHAT_MODEL_PATH="$(env_get CHAT_MODEL_PATH '')"
 
-# A/B knobs (override in .env). Default to main's two build trees in ./llama.cpp.
+# A/B knobs (override in .env). Default to the two build trees produced by
+# scripts/build_llama.sh under ./llama.cpp — no machine-specific paths.
 AB_BASELINE_BINDIR="$(env_get AB_BASELINE_BINDIR "$PWD/llama.cpp/build/bin")"
 AB_ZENDNN_BINDIR="$(env_get AB_ZENDNN_BINDIR "$PWD/llama.cpp/build_zendnn/bin")"
-AB_ZENDNN_LIBDIR="$(env_get AB_ZENDNN_LIBDIR "/home/zettabolt/internal_zendnn/ZenDNN/build/install/zendnnl/lib")"
+# ZenDNN runtime lib dir. Leave empty (default) to auto-discover it from the
+# zendnn binary's own linkage (its RPATH already points at libzendnnl.so), so
+# nothing has to be hand-configured. Only set this if the .so isn't on the
+# binary's RPATH and isn't in the system linker cache.
+AB_ZENDNN_LIBDIR="$(env_get AB_ZENDNN_LIBDIR "")"
 AB_ZENDNN_ALGO="$(env_get AB_ZENDNN_ALGO "1")"
 # Fixed-decode mode: set AB_FIXED_DECODE=<N> (in .env or env) to force EVERY query
 # to emit exactly N decode tokens on BOTH backends (ignore_eos + n_predict=N),
@@ -43,8 +48,16 @@ JOB_B="${JOB_B:-zendnn}"
 # ── preconditions ────────────────────────────────────────────────────────────
 [ -n "$ALLM_KEY" ] || die "ALLM_KEY empty — run ./setup.sh first"
 [ -n "$CHAT_MODEL_PATH" ] || die "CHAT_MODEL_PATH must point at a local GGUF for the A/B (set it in .env)"
-[ -x "$AB_BASELINE_BINDIR/llama-server" ] || die "baseline binary not found: $AB_BASELINE_BINDIR/llama-server"
-[ -x "$AB_ZENDNN_BINDIR/llama-server" ]   || die "zendnn binary not found: $AB_ZENDNN_BINDIR/llama-server"
+if [ ! -x "$AB_BASELINE_BINDIR/llama-server" ] || [ ! -x "$AB_ZENDNN_BINDIR/llama-server" ]; then
+    die "llama-server binaries not found under ./llama.cpp — build them first: scripts/build_llama.sh"
+fi
+# Auto-discover the ZenDNN runtime lib dir from the zendnn binary itself (its
+# RPATH already resolves libzendnnl.so), so no path needs to be hand-configured.
+if [ -z "$AB_ZENDNN_LIBDIR" ]; then
+    AB_ZENDNN_LIBDIR="$(ldd "$AB_ZENDNN_BINDIR/llama-server" 2>/dev/null \
+        | awk '/libzendnnl/ {print $3}' | head -1 | xargs -r dirname || true)"
+    [ -n "$AB_ZENDNN_LIBDIR" ] && log "auto-discovered ZenDNN lib dir: $AB_ZENDNN_LIBDIR"
+fi
 if [ -n "$AB_ZENDNN_LIBDIR" ] && [ ! -e "$AB_ZENDNN_LIBDIR/libzendnnl.so" ]; then
     die "libzendnnl.so not found in AB_ZENDNN_LIBDIR=$AB_ZENDNN_LIBDIR (the zendnn binary links it at load time)"
 fi

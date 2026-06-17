@@ -210,7 +210,12 @@ services:
       EMBEDDING_BASE_PATH: http://litellm:4000/v1
       GENERIC_OPEN_AI_EMBEDDING_API_KEY: ${LITELLM_MASTER_KEY:-sk-bench-master}
       EMBEDDING_MODEL_PREF: embed-model
-      EMBEDDING_MODEL_MAX_CHUNK_LENGTH: ${EMBED_CTX:-2048}
+      # BINDING cap (in CHARACTERS — AnythingLLM's splitter counts chars, not
+      # tokens) on the text-splitter chunk size. The actual chunk size/overlap is
+      # written to the DB by scripts/seed_anythingllm.py (EMBED_CHUNK_WORDS x ~6
+      # chars). Keep this >= that char value so the chunk size isn't capped.
+      # Default 8192 chars ~= EMBED_CTX(2048 tok) x 4 = the embedder's char capacity.
+      EMBEDDING_MODEL_MAX_CHUNK_LENGTH: ${EMBED_MAX_CHUNK_CHARS:-8192}
     volumes:
       - anythingllm-storage:/app/server/storage
     ports:

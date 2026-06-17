@@ -19,5 +19,6 @@ results_old/
 config.env
 llama.cpp
 llama.cpp/
+third_party/
 *.log
 *.pid

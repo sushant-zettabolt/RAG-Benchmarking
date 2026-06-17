@@ -180,9 +180,23 @@ report with per-stage latency, inference throughput (prefill/decode t/s), and
 speedup ratios.
 
 ```bash
+make build-llama               # fetch + build both backends from fresh sources
 ./setup.sh && make ingest      # stack up + documents ingested
 make ab                        # baseline job, then zendnn job, then report_ab
 ```
+
+`make build-llama` (i.e. `scripts/build_llama.sh`) fetches **fresh upstream**
+llama.cpp and builds both backends under `./llama.cpp` — no machine-specific
+paths, nothing local preserved:
+
+- `build/` = baseline (ggml-cpu only, `GGML_ZENDNN=OFF`),
+- `build_zendnn/` = ggml-cpu + ggml-zendnn (`GGML_ZENDNN=ON`).
+
+ZenDNN itself needs no setup: with `GGML_ZENDNN=ON` and no `ZENDNN_ROOT`,
+llama.cpp's own CMake downloads the public `amd/ZenDNN` (pinned tag), builds it,
+and links it — so the first zendnn build takes a few extra minutes. Pass
+`--fresh` to wipe and re-clone; override `LLAMA_REPO`/`LLAMA_REF` in `.env` if
+you need a different llama.cpp source.
 
 `run_ab.sh` swaps only the `llama-chat` backend between jobs and runs them
 **strictly sequentially** — one chat server at a time — so they never compete
@@ -192,9 +206,9 @@ How the two backends are provided (configurable in `.env`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AB_BASELINE_BINDIR` | `./llama.cpp/build/bin` | Host dir with a baseline `llama-server` (no ZenDNN) |
-| `AB_ZENDNN_BINDIR` | `./llama.cpp/build_zendnn/bin` | Host dir with a ZenDNN-enabled `llama-server` |
-| `AB_ZENDNN_LIBDIR` | _(ZenDNN install lib)_ | Dir with `libzendnnl.so`, added to `LD_LIBRARY_PATH` for the zendnn job |
+| `AB_BASELINE_BINDIR` | `./llama.cpp/build/bin` | Dir with the baseline `llama-server` (built by `build_llama.sh`) |
+| `AB_ZENDNN_BINDIR` | `./llama.cpp/build_zendnn/bin` | Dir with the ZenDNN-enabled `llama-server` (built by `build_llama.sh`) |
+| `AB_ZENDNN_LIBDIR` | _(empty → auto)_ | Dir with `libzendnnl.so`. Empty = auto-discovered from the zendnn binary's RPATH; set only to override |
 | `AB_ZENDNN_ALGO` | `1` | `ZENDNNL_MATMUL_ALGO` value for the zendnn job |
 
 Each job mounts its build tree into the runtime image
