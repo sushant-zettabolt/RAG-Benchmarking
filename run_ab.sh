@@ -27,15 +27,11 @@ SLUG="$(env_get SLUG nq-bench)"
 ALLM_KEY="$(env_get ALLM_KEY '')"
 CHAT_MODEL_PATH="$(env_get CHAT_MODEL_PATH '')"
 
-# A/B knobs (override in .env). Default to the two build trees produced by
-# scripts/build_llama.sh under ./llama.cpp — no machine-specific paths.
-AB_BASELINE_BINDIR="$(env_get AB_BASELINE_BINDIR "$PWD/llama.cpp/build/bin")"
-AB_ZENDNN_BINDIR="$(env_get AB_ZENDNN_BINDIR "$PWD/llama.cpp/build_zendnn/bin")"
-# ZenDNN runtime lib dir. Leave empty (default) to auto-discover it from the
-# zendnn binary's own linkage (its RPATH already points at libzendnnl.so), so
-# nothing has to be hand-configured. Only set this if the .so isn't on the
-# binary's RPATH and isn't in the system linker cache.
-AB_ZENDNN_LIBDIR="$(env_get AB_ZENDNN_LIBDIR "")"
+# A/B knobs (override in .env). The two backends are build-from-source IMAGES
+# (built by `make build-llama` / scripts/build_llama.sh) — no host binaries, no
+# machine-specific paths. The job swaps the llama-chat image; ZenDNN is baked in.
+LLAMA_BASELINE_IMAGE="$(env_get LLAMA_BASELINE_IMAGE "nqrag-llama:baseline")"
+LLAMA_ZENDNN_IMAGE="$(env_get LLAMA_ZENDNN_IMAGE "nqrag-llama:zendnn")"
 AB_ZENDNN_ALGO="$(env_get AB_ZENDNN_ALGO "1")"
 # Fixed-decode mode: set AB_FIXED_DECODE=<N> (in .env or env) to force EVERY query
 # to emit exactly N decode tokens on BOTH backends (ignore_eos + n_predict=N),
@@ -49,19 +45,15 @@ JOB_B="${JOB_B:-zendnn}"
 # ── preconditions ────────────────────────────────────────────────────────────
 [ -n "$ALLM_KEY" ] || die "ALLM_KEY empty — run ./setup.sh first"
 [ -n "$CHAT_MODEL_PATH" ] || die "CHAT_MODEL_PATH must point at a local GGUF for the A/B (set it in .env)"
-if [ ! -x "$AB_BASELINE_BINDIR/llama-server" ] || [ ! -x "$AB_ZENDNN_BINDIR/llama-server" ]; then
-    die "llama-server binaries not found under ./llama.cpp — build them first: scripts/build_llama.sh"
+# Both build-from-source images must exist; build whatever is missing (the first
+# build compiles llama.cpp twice — minutes — then layers cache).
+have_image() { docker image inspect "$1" >/dev/null 2>&1; }
+if ! have_image "$LLAMA_BASELINE_IMAGE" || ! have_image "$LLAMA_ZENDNN_IMAGE"; then
+    log "building missing llama images ($LLAMA_BASELINE_IMAGE / $LLAMA_ZENDNN_IMAGE) ..."
+    ./scripts/build_llama.sh
 fi
-# Auto-discover the ZenDNN runtime lib dir from the zendnn binary itself (its
-# RPATH already resolves libzendnnl.so), so no path needs to be hand-configured.
-if [ -z "$AB_ZENDNN_LIBDIR" ]; then
-    AB_ZENDNN_LIBDIR="$(ldd "$AB_ZENDNN_BINDIR/llama-server" 2>/dev/null \
-        | awk '/libzendnnl/ {print $3}' | head -1 | xargs -r dirname || true)"
-    [ -n "$AB_ZENDNN_LIBDIR" ] && log "auto-discovered ZenDNN lib dir: $AB_ZENDNN_LIBDIR"
-fi
-if [ -n "$AB_ZENDNN_LIBDIR" ] && [ ! -e "$AB_ZENDNN_LIBDIR/libzendnnl.so" ]; then
-    die "libzendnnl.so not found in AB_ZENDNN_LIBDIR=$AB_ZENDNN_LIBDIR (the zendnn binary links it at load time)"
-fi
+have_image "$LLAMA_BASELINE_IMAGE" || die "baseline image $LLAMA_BASELINE_IMAGE missing — build it: make build-llama"
+have_image "$LLAMA_ZENDNN_IMAGE"   || die "zendnn image $LLAMA_ZENDNN_IMAGE missing — build it: make build-llama"
 
 wait_for() {  # name url tries
     echo -n "[run_ab] waiting for $1 "
@@ -191,15 +183,13 @@ verify_cache_disabled() {  # job
         || log "⚠️  WARNING: prompt cache appears ACTIVE for '$job' (2nd request reprocessed far fewer tokens). prompt_tokens/prefill numbers may be inflated and will NOT match the other job."
 }
 
-run_job() {  # job bindir libdir algo
-    local job="$1" bindir="$2" libdir="$3" algo="$4"
-    log "════ job '$job': swapping chat backend (bindir=$bindir algo=${algo:-unset}) ════"
-    # Only recreate llama-chat. The embed server stays untouched (always baseline
-    # binary, started by the $DC_BASE up earlier) — avoids the 501 race where a
-    # restarting embed server briefly rejects embedding requests.
-    # EMBED_BINDIR is passed for compose-file validation only; embed is NOT recreated.
-    CHAT_BINDIR="$bindir" CHAT_LIBDIR="${libdir:-$bindir}" \
-        EMBED_BINDIR="$AB_BASELINE_BINDIR" EMBED_LIBDIR="$AB_BASELINE_BINDIR" \
+run_job() {  # job image algo
+    local job="$1" image="$2" algo="$3"
+    log "════ job '$job': swapping chat backend (image=$image algo=${algo:-unset}) ════"
+    # Only recreate llama-chat (--no-deps). The embed server stays untouched (always
+    # the baseline image, started by the $DC_BASE up earlier) — avoids the 501 race
+    # where a restarting embed server briefly rejects embedding requests.
+    CHAT_IMAGE="$image" \
         ZENDNNL_MATMUL_ALGO="$algo" AB_JOB="$job" \
         $DC_AB up -d --force-recreate --no-deps llama-chat >/dev/null 2>&1
     wait_for "chat ($job)" "http://localhost:${CHAT_PORT}/health" 120 \
@@ -215,8 +205,8 @@ run_job() {  # job bindir libdir algo
 
 [ -n "$AB_FIXED_DECODE" ] && enable_fixed_decode "$AB_FIXED_DECODE"
 
-run_job "$JOB_A" "$AB_BASELINE_BINDIR" "$AB_BASELINE_BINDIR" ""
-run_job "$JOB_B" "$AB_ZENDNN_BINDIR"   "$AB_ZENDNN_LIBDIR"   "$AB_ZENDNN_ALGO"
+run_job "$JOB_A" "$LLAMA_BASELINE_IMAGE" ""
+run_job "$JOB_B" "$LLAMA_ZENDNN_IMAGE"   "$AB_ZENDNN_ALGO"
 
 log "generating comparison report ..."
 $DC_BASE run --rm -e JOB_A="$JOB_A" -e JOB_B="$JOB_B" harness python report_ab.py

@@ -98,10 +98,11 @@ if either variable is unset or the referenced file isn't found in the mount.
 
 ### GPU
 
-The default image is CPU-only. For NVIDIA GPUs set
-`LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda`, set `CHAT_NGL`/`EMBED_NGL`
-> 0, and add a `deploy.resources.reservations.devices` GPU reservation to the
-`llama-chat`/`llama-embed` services (requires nvidia-container-toolkit).
+The image is built CPU-only (`-march=native`, ggml CPU/ZenDNN). For NVIDIA GPUs
+you'd add a CUDA toolchain + `-DGGML_CUDA=ON` to `docker/llama/Dockerfile`, set
+`CHAT_NGL`/`EMBED_NGL` > 0, and add a `deploy.resources.reservations.devices` GPU
+reservation to the `llama-chat`/`llama-embed` services (requires
+nvidia-container-toolkit). Not wired up by default — this benchmark targets CPU.
 
 ### NUMA / CPU pinning
 
@@ -180,40 +181,42 @@ report with per-stage latency, inference throughput (prefill/decode t/s), and
 speedup ratios.
 
 ```bash
-make build-llama               # fetch + build both backends from fresh sources
+make build-llama               # build both backend IMAGES from public source
 ./setup.sh && make ingest      # stack up + documents ingested
 make ab                        # baseline job, then zendnn job, then report_ab
 ```
 
-`make build-llama` (i.e. `scripts/build_llama.sh`) fetches **fresh upstream**
-llama.cpp and builds both backends under `./llama.cpp` — no machine-specific
-paths, nothing local preserved:
+`make build-llama` (i.e. `scripts/build_llama.sh`) builds two Docker images from
+**public** llama.cpp source via `docker/llama/Dockerfile` — no host build trees,
+no binary mounts, nothing proprietary:
 
-- `build/` = baseline (ggml-cpu only, `GGML_ZENDNN=OFF`),
-- `build_zendnn/` = ggml-cpu + ggml-zendnn (`GGML_ZENDNN=ON`).
+- `nqrag-llama:baseline` = ggml-cpu only (`GGML_ZENDNN=OFF`),
+- `nqrag-llama:zendnn` = ggml-cpu + ggml-zendnn (`GGML_ZENDNN=ON`).
 
-ZenDNN itself needs no setup: with `GGML_ZENDNN=ON` and no `ZENDNN_ROOT`,
-llama.cpp's own CMake downloads the public `amd/ZenDNN` (pinned tag), builds it,
-and links it — so the first zendnn build takes a few extra minutes. Pass
-`--fresh` to wipe and re-clone; override `LLAMA_REPO`/`LLAMA_REF` in `.env` if
-you need a different llama.cpp source.
+Both images are pinned to the **same** llama.cpp commit (the script resolves
+`HEAD` once and feeds it to both builds as `LLAMA_CPP_REF`) so the A/B is fair.
+ZenDNN needs no setup: with `GGML_ZENDNN=ON` and no `ZENDNN_ROOT`, llama.cpp's
+own CMake downloads the public `amd/ZenDNN` (pinned tag), builds it, and links
+it — so the first zendnn build takes a few extra minutes. Pass `--no-cache` to
+force a from-scratch rebuild; override `LLAMA_CPP_REPO`/`LLAMA_CPP_REF` in `.env`
+for a different source or to freeze a commit. (Plain `docker compose up` already
+builds the baseline image; `build-llama` adds the zendnn one and pins both.)
 
-`run_ab.sh` swaps only the `llama-chat` backend between jobs and runs them
+`run_ab.sh` swaps only the `llama-chat` **image** between jobs and runs them
 **strictly sequentially** — one chat server at a time — so they never compete
 for CPU and the numbers stay clean. It writes `data/results/report_ab.{md,json}`.
 
-How the two backends are provided (configurable in `.env`):
+How the two backends are selected (configurable in `.env`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AB_BASELINE_BINDIR` | `./llama.cpp/build/bin` | Dir with the baseline `llama-server` (built by `build_llama.sh`) |
-| `AB_ZENDNN_BINDIR` | `./llama.cpp/build_zendnn/bin` | Dir with the ZenDNN-enabled `llama-server` (built by `build_llama.sh`) |
-| `AB_ZENDNN_LIBDIR` | _(empty → auto)_ | Dir with `libzendnnl.so`. Empty = auto-discovered from the zendnn binary's RPATH; set only to override |
+| `LLAMA_BASELINE_IMAGE` | `nqrag-llama:baseline` | Baseline image (run for the baseline job, and for embed throughout) |
+| `LLAMA_ZENDNN_IMAGE` | `nqrag-llama:zendnn` | ZenDNN image (run for the zendnn job's chat server) |
 | `AB_ZENDNN_ALGO` | `1` | `ZENDNNL_MATMUL_ALGO` value for the zendnn job |
 
-Each job mounts its build tree into the runtime image
-(`docker-compose.ab.yml`) and runs that binary — so baseline and zendnn differ
-only in the llama.cpp backend. `CHAT_MODEL_PATH` must point at a local GGUF (the
+Each job sets `CHAT_IMAGE` and recreates only `llama-chat`
+(`docker-compose.ab.yml`) — so baseline and zendnn differ only in the llama.cpp
+backend baked into the image. `CHAT_MODEL_PATH` must point at a local GGUF (the
 A/B uses your real model, since ZenDNN targets matmul-bound prefill). A sample
 A/B report is in [`reports/`](reports/).
 

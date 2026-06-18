@@ -8,8 +8,17 @@ services:
   # Models are NOT downloaded — supply your own GGUF via MODELS_DIR (mounted at
   # /models) and point CHAT_MODEL_PATH at it.
   llama-chat:
-    build: {context: docker, dockerfile: Dockerfile.llama}
-    image: nqrag-llama:local
+    # Built from PUBLIC llama.cpp source on first `up` (see docker/llama/Dockerfile).
+    # GGML_ZENDNN=OFF -> the baseline (ggml CPU) image. run_ab.sh overrides
+    # CHAT_IMAGE to nqrag-llama:zendnn per job to swap backends (image-swap A/B).
+    build:
+      context: docker/llama
+      dockerfile: Dockerfile
+      args:
+        GGML_ZENDNN: "OFF"
+        LLAMA_CPP_REPO: ${LLAMA_CPP_REPO:-https://github.com/ggml-org/llama.cpp}
+        LLAMA_CPP_REF: ${LLAMA_CPP_REF:-}
+    image: ${CHAT_IMAGE:-nqrag-llama:baseline}
     container_name: nqrag-llama-chat
     user: "${HOST_UID:-1002}:${HOST_GID:-1002}"
     # CPU pinning via Docker cpuset (cgroup). Chat gets socket 1 exclusively;
@@ -53,8 +62,17 @@ services:
 
   # ── Embedding server ───────────────────────────────────────────────────────
   llama-embed:
-    build: {context: docker, dockerfile: Dockerfile.llama}
-    image: nqrag-llama:local
+    # Same build-from-source image as llama-chat (identical build = cache hit, no
+    # second compile). Embed always runs the baseline image — the A/B swaps only
+    # the chat backend (run_ab.sh), so EMBED_IMAGE stays at baseline.
+    build:
+      context: docker/llama
+      dockerfile: Dockerfile
+      args:
+        GGML_ZENDNN: "OFF"
+        LLAMA_CPP_REPO: ${LLAMA_CPP_REPO:-https://github.com/ggml-org/llama.cpp}
+        LLAMA_CPP_REF: ${LLAMA_CPP_REF:-}
+    image: ${EMBED_IMAGE:-nqrag-llama:baseline}
     container_name: nqrag-llama-embed
     user: "${HOST_UID:-1002}:${HOST_GID:-1002}"
     # Runs on socket 0 (shares with litellm) to keep socket 1 clean for chat.

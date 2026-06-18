@@ -1,63 +1,67 @@
 # ZenDNN A/B overlay. Used by run_ab.sh as:
 #   docker compose -f docker-compose.yml -f docker-compose.ab.yml ...
 #
-# It reconfigures `llama-chat` to run a host-built llama-server binary (mounted
-# from a build tree) inside the same runtime image, so a baseline build and a
-# ZenDNN build can be swapped per job while everything else stays identical.
-# The base stack (embed/litellm/prometheus/anythingllm/harness) is unchanged.
+# Build-from-source mechanism: instead of mounting host-built binaries, the A/B
+# swaps the llama IMAGE per job (nqrag-llama:baseline -> nqrag-llama:zendnn, both
+# built by `make build-llama`). run_ab.sh recreates only llama-chat (chat A/B);
+# run_embed_ab.sh recreates only llama-embed (embed A/B). Whichever service is NOT
+# being swapped keeps the baseline image from the base compose. Recreating just
+# one service (--no-deps) also avoids the 501 race where a restarting embed server
+# briefly rejects requests. litellm/prometheus/anythingllm/harness are unchanged.
 services:
   llama-chat:
-    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}   # runtime only
-    # CPU pinning via Docker cpuset — same as the base service.
+    # CHAT_IMAGE is the per-job override (baseline vs zendnn). No build block here —
+    # the image must already exist (make build-llama / docker compose build).
+    image: ${CHAT_IMAGE:-nqrag-llama:zendnn}
     cpuset: ${CHAT_CPUSET:-}
     environment:
+      # Empty ZENDNNL_MATMUL_ALGO is unset in the command, so the baseline job runs
+      # with no ZenDNN env at all; the zendnn job sets it to AB_ZENDNN_ALGO.
       ZENDNNL_MATMUL_ALGO: ${ZENDNNL_MATMUL_ALGO:-}
       AB_JOB: ${AB_JOB:-}
+      CHAT_MODEL_PATH: ${CHAT_MODEL_PATH:-}
       CHAT_CTX: ${CHAT_CTX:-8192}
       CHAT_NGL: ${CHAT_NGL:-0}
       CHAT_PARALLEL: ${CHAT_PARALLEL:-1}
       CHAT_THREADS: ${CHAT_THREADS:-}
-      CHAT_MODEL_PATH: ${CHAT_MODEL_PATH:-}
       CHAT_EXTRA_FLAGS: ${CHAT_EXTRA_FLAGS:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        export LD_LIBRARY_PATH=/opt/llama/bin:/opt/llama/lib:$$LD_LIBRARY_PATH
+        if [ -z "$$CHAT_MODEL_PATH" ]; then echo "ERROR: CHAT_MODEL_PATH is not set." >&2; exit 1; fi
+        if [ ! -f "$$CHAT_MODEL_PATH" ]; then echo "ERROR: chat model not found at $$CHAT_MODEL_PATH." >&2; exit 1; fi
         export OMP_PROC_BIND=close
         export OMP_PLACES=cores
         [ -z "$$ZENDNNL_MATMUL_ALGO" ] && unset ZENDNNL_MATMUL_ALGO
         ARGS="--host 0.0.0.0 --port 8080 --ctx-size $$CHAT_CTX --n-gpu-layers $$CHAT_NGL --parallel $$CHAT_PARALLEL --no-mmap -fa on --metrics --alias chat-model --model $$CHAT_MODEL_PATH"
         if [ -n "$$CHAT_THREADS" ]; then ARGS="$$ARGS --threads $$CHAT_THREADS"; fi
         ARGS="$$ARGS $$CHAT_EXTRA_FLAGS"
-        echo "[llama-chat AB job=$${AB_JOB:-?} algo=$${ZENDNNL_MATMUL_ALGO:-unset}] /opt/llama/bin/llama-server $$ARGS"
-        exec /opt/llama/bin/llama-server $$ARGS
-    volumes:
-      - ${CHAT_BINDIR:?set CHAT_BINDIR (host llama-server build/bin dir)}:/opt/llama/bin:ro
-      - ${CHAT_LIBDIR:-${CHAT_BINDIR}}:/opt/llama/lib:ro
+        echo "[llama-chat AB job=$${AB_JOB:-?} algo=$${ZENDNNL_MATMUL_ALGO:-unset}] /app/llama-server $$ARGS"
+        exec /app/llama-server $$ARGS
 
   llama-embed:
-    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    # EMBED_IMAGE is the per-job override for the embed A/B (run_embed_ab.sh).
+    # Defaults to baseline so the chat A/B (run_ab.sh) leaves embed on baseline.
+    image: ${EMBED_IMAGE:-nqrag-llama:baseline}
     cpuset: ${EMBED_CPUSET:-}
     environment:
       ZENDNNL_MATMUL_ALGO: ${ZENDNNL_MATMUL_ALGO:-}
       AB_JOB: ${AB_JOB:-}
+      EMBED_MODEL_PATH: ${EMBED_MODEL_PATH:-}
       EMBED_CTX: ${EMBED_CTX:-2048}
       EMBED_BATCH: ${EMBED_BATCH:-2048}
       EMBED_UBATCH: ${EMBED_UBATCH:-2048}
       EMBED_NGL: ${EMBED_NGL:-0}
       EMBED_THREADS: ${EMBED_THREADS:-}
-      EMBED_MODEL_PATH: ${EMBED_MODEL_PATH:-}
       EMBED_EXTRA_FLAGS: ${EMBED_EXTRA_FLAGS:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        export LD_LIBRARY_PATH=/opt/llama/bin:/opt/llama/lib:$$LD_LIBRARY_PATH
+        if [ -z "$$EMBED_MODEL_PATH" ]; then echo "ERROR: EMBED_MODEL_PATH is not set." >&2; exit 1; fi
+        if [ ! -f "$$EMBED_MODEL_PATH" ]; then echo "ERROR: embedding model not found at $$EMBED_MODEL_PATH." >&2; exit 1; fi
         [ -z "$$ZENDNNL_MATMUL_ALGO" ] && unset ZENDNNL_MATMUL_ALGO
         ARGS="--host 0.0.0.0 --port 8080 --embedding --ctx-size $$EMBED_CTX --batch-size $$EMBED_BATCH --ubatch-size $$EMBED_UBATCH --n-gpu-layers $$EMBED_NGL --metrics --alias embed-model --model $$EMBED_MODEL_PATH"
         if [ -n "$$EMBED_THREADS" ]; then ARGS="$$ARGS --threads $$EMBED_THREADS"; fi
         ARGS="$$ARGS $$EMBED_EXTRA_FLAGS"
-        echo "[llama-embed AB job=$${AB_JOB:-?} algo=$${ZENDNNL_MATMUL_ALGO:-unset}] /opt/llama/bin/llama-server $$ARGS"
-        exec /opt/llama/bin/llama-server $$ARGS
-    volumes:
-      - ${EMBED_BINDIR:?set EMBED_BINDIR (host llama-server build/bin dir)}:/opt/llama/bin:ro
-      - ${EMBED_LIBDIR:-${EMBED_BINDIR}}:/opt/llama/lib:ro
+        echo "[llama-embed AB job=$${AB_JOB:-?} algo=$${ZENDNNL_MATMUL_ALGO:-unset}] /app/llama-server $$ARGS"
+        exec /app/llama-server $$ARGS
