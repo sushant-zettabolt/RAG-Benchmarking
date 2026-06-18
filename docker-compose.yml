@@ -225,6 +225,30 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # ── Seed (one-shot) — makes `docker compose up` self-configure AnythingLLM ───
+  # Runs once after anythingllm is healthy: registers the API key + provider /
+  # chunking settings straight into the mounted AnythingLLM DB, then exits. This
+  # is what removes the need to run ./setup.sh — a bare `docker compose up -d`
+  # brings up the stack AND seeds it. Idempotent (safe to re-run on every up).
+  seed:
+    image: nqrag-harness:local
+    build: ./harness
+    container_name: nqrag-seed
+    depends_on:
+      anythingllm: {condition: service_healthy}
+    environment:
+      ALLM_DB: /allm-storage/anythingllm.db
+      ALLM_KEY: ${ALLM_KEY:-}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-bench-master}
+      CHAT_CTX: ${CHAT_CTX:-8192}
+      EMBED_CHUNK_WORDS: ${EMBED_CHUNK_WORDS:-512}
+      EMBED_CHUNK_OVERLAP_WORDS: ${EMBED_CHUNK_OVERLAP_WORDS:-100}
+    volumes:
+      - anythingllm-storage:/allm-storage   # same named volume the app uses
+      - ./scripts:/scripts:ro
+    restart: "no"
+    command: ["python3", "/scripts/seed_anythingllm.py"]
+
   # ── Harness toolbox (ingest / evaluate / report) — run on demand ─────────────
   # Not started by `docker compose up` (profile gated). Invoke with:
   #   docker compose run --rm harness python ingest.py

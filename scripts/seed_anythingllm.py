@@ -1,13 +1,18 @@
 """Seed AnythingLLM's SQLite DB with an API key and the LLM/embedder provider
-settings. Run INSIDE the anythingllm container (env vars alone are not enough —
-DB values override them). Idempotent. Invoked by setup.sh via:
+settings. DB values override env vars, so this runs regardless of the anythingllm
+container's own environment. Idempotent. The DB path comes from ALLM_DB.
 
-    docker compose exec -T -e ALLM_KEY=... anythingllm python3 - < scripts/seed_anythingllm.py
+Two ways it runs (same script, same logic):
+  - `seed` sidecar (default on `docker compose up`): mounts the anythingllm named
+    volume and seeds ALLM_DB=/allm-storage/anythingllm.db. By the time anythingllm
+    is healthy, Prisma has created the DB + tables, so the upsert is safe.
+  - legacy, inside the anythingllm container (setup.sh):
+        docker compose exec -T -e ALLM_KEY=... anythingllm python3 - < scripts/seed_anythingllm.py
 """
 import os
 import sqlite3
 
-DB = "/app/server/storage/anythingllm.db"
+DB = os.environ.get("ALLM_DB", "/app/server/storage/anythingllm.db")
 conn = sqlite3.connect(DB)
 cur = conn.cursor()
 
