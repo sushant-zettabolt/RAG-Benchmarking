@@ -154,21 +154,26 @@ def write_docs(docs):
 
 
 def get_or_create_workspace():
-    r = requests.post(f"{C.ALLM_URL}/api/v1/workspace/new",
-                      headers={**C.ALLM_HEADERS, "Content-Type": "application/json"},
-                      json={"name": C.SLUG}, timeout=60)
+    # Check if the workspace already exists before creating — AnythingLLM does
+    # NOT deduplicate by name; calling /workspace/new always creates a new slug.
+    slug = None
     try:
-        slug = r.json().get("workspace", {}).get("slug")
-    except Exception:
-        slug = None
-    if not slug:
-        # already exists — look it up
         ws = requests.get(f"{C.ALLM_URL}/api/v1/workspaces",
                           headers=C.ALLM_HEADERS, timeout=60).json()
         for w in ws.get("workspaces", []):
             if w.get("slug") == C.SLUG or w.get("name") == C.SLUG:
                 slug = w["slug"]
                 break
+    except Exception:
+        pass
+    if not slug:
+        r = requests.post(f"{C.ALLM_URL}/api/v1/workspace/new",
+                          headers={**C.ALLM_HEADERS, "Content-Type": "application/json"},
+                          json={"name": C.SLUG}, timeout=60)
+        try:
+            slug = r.json().get("workspace", {}).get("slug")
+        except Exception:
+            slug = None
     if not slug:
         raise RuntimeError(f"could not create or find workspace '{C.SLUG}'")
     # Configure retrieval so prompts carry a substantial context (bigger prefill).

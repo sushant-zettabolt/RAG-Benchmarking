@@ -72,6 +72,22 @@ wait_for "llama-chat"  "http://localhost:${CHAT_PORT}/health"  240
 wait_for "llama-embed" "http://localhost:${EMBED_PORT}/health" 120
 wait_for "litellm"     "http://localhost:${LITELLM_PORT}/health/readiness" 60
 wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
+
+# Self-heal: sync ALLM_KEY from the DB in case it drifted (e.g. after a volume
+# wipe + re-setup). docker restart in allm_set_model also triggers key drift.
+db_key=$(docker exec nqrag-anythingllm python3 -c "
+import sqlite3
+conn = sqlite3.connect('/app/server/storage/anythingllm.db')
+row = conn.execute('SELECT secret FROM api_keys LIMIT 1').fetchone()
+print(row[0] if row else '')
+conn.close()
+" 2>/dev/null || true)
+if [ -n "$db_key" ] && [ "$db_key" != "$ALLM_KEY" ]; then
+    log "ALLM_KEY drift detected — syncing .env and reloading ($ALLM_KEY → $db_key)"
+    sed -i "s|^ALLM_KEY=.*|ALLM_KEY=${db_key}|" .env
+    ALLM_KEY="$db_key"
+fi
+
 log "all services healthy — embed server stays up for the entire run"
 
 # ── fixed-decode mode ────────────────────────────────────────────────────────
@@ -97,15 +113,12 @@ restore_and_stop() {
 }
 trap restore_and_stop EXIT INT TERM
 
-allm_set_model() {  # model_name — update AnythingLLM's LLM model preference in its DB
-    docker exec nqrag-anythingllm python3 -c "
-import sqlite3
-conn = sqlite3.connect('/app/server/storage/anythingllm.db')
-for label in ('GenericOpenAiModelPref', 'LLMPreference'):
-    conn.execute('UPDATE system_settings SET value=? WHERE label=?', ('$1', label))
-conn.commit(); conn.close(); print('allm model →', '$1')
-"
-    docker restart nqrag-anythingllm >/dev/null 2>&1
+allm_set_model() {  # model_name — set AnythingLLM's LLM via container env var
+    # GENERIC_OPEN_AI_MODEL_PREF (set from CHAT_MODEL_NAME in docker-compose.yml)
+    # takes precedence over the DB setting, so recreate the container with the
+    # correct env var. Named volume anythingllm-storage persists — no DB wipe.
+    log "setting AnythingLLM model → $1"
+    CHAT_MODEL_NAME="$1" $DC_BASE up -d --force-recreate --no-deps anythingllm >/dev/null 2>&1
     wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
 }
 
@@ -121,6 +134,22 @@ enable_fixed_decode() {  # N
     wait_for "litellm" "http://localhost:${LITELLM_PORT}/health/readiness" 30 || true
     allm_set_model "chat-model-bench"
     DOJUDGE_ARGS=""   # judge runs even in fixed-decode mode
+}
+
+# Embed warmup: fire 2 pre-queries directly at llama-embed so the server is
+# fully initialised before the first measured query. Without this the embed
+# server is cold for the baseline job and warm for zendnn (having processed
+# all baseline queries), producing a spurious ~2x latency difference.
+EMBED_WARMUP_ROUNDS="${EMBED_WARMUP_ROUNDS:-2}"
+EMBED_WARMUP_TEXT="The quick brown fox jumps over the lazy dog. Warmup query for embedding server initialisation."
+warmup_embed() {
+    log "warming up embed server — $EMBED_WARMUP_ROUNDS rounds ..."
+    for i in $(seq 1 "$EMBED_WARMUP_ROUNDS"); do
+        curl -fsS -m 30 "http://localhost:${EMBED_PORT}/v1/embeddings" \
+            -H "Content-Type: application/json" \
+            -d "{\"input\":\"$EMBED_WARMUP_TEXT\",\"model\":\"embed-model\"}" >/dev/null 2>&1 || true
+        log "  embed warmup $i/$EMBED_WARMUP_ROUNDS done"
+    done
 }
 
 # Direct warmup: send a 512+ token prompt straight to llama-server (bypasses the
@@ -186,9 +215,9 @@ verify_cache_disabled() {  # job
 run_job() {  # job image algo
     local job="$1" image="$2" algo="$3"
     log "════ job '$job': swapping chat backend (image=$image algo=${algo:-unset}) ════"
-    # Only recreate llama-chat (--no-deps). The embed server stays untouched (always
-    # the baseline image, started by the $DC_BASE up earlier) — avoids the 501 race
-    # where a restarting embed server briefly rejects embedding requests.
+    # Only recreate llama-chat (--no-deps). Embed stays on the baseline image for
+    # both jobs — the ZenDNN build does not support /v1/embeddings (returns 501) —
+    # and not recreating it also avoids the brief 501 race during a restart.
     CHAT_IMAGE="$image" \
         ZENDNNL_MATMUL_ALGO="$algo" AB_JOB="$job" \
         $DC_AB up -d --force-recreate --no-deps llama-chat >/dev/null 2>&1
@@ -204,6 +233,8 @@ run_job() {  # job image algo
 }
 
 [ -n "$AB_FIXED_DECODE" ] && enable_fixed_decode "$AB_FIXED_DECODE"
+
+warmup_embed
 
 run_job "$JOB_A" "$LLAMA_BASELINE_IMAGE" ""
 run_job "$JOB_B" "$LLAMA_ZENDNN_IMAGE"   "$AB_ZENDNN_ALGO"
