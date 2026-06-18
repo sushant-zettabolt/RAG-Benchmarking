@@ -121,15 +121,12 @@ restore_and_stop() {
 }
 trap restore_and_stop EXIT INT TERM
 
-allm_set_model() {  # model_name — update AnythingLLM's LLM model preference in its DB
-    docker exec nqrag-anythingllm python3 -c "
-import sqlite3
-conn = sqlite3.connect('/app/server/storage/anythingllm.db')
-for label in ('GenericOpenAiModelPref', 'LLMPreference'):
-    conn.execute('UPDATE system_settings SET value=? WHERE label=?', ('$1', label))
-conn.commit(); conn.close(); print('allm model →', '$1')
-"
-    docker restart nqrag-anythingllm >/dev/null 2>&1
+allm_set_model() {  # model_name — set AnythingLLM's LLM via container env var
+    # GENERIC_OPEN_AI_MODEL_PREF (set from CHAT_MODEL_NAME in docker-compose.yml)
+    # takes precedence over the DB setting, so recreate the container with the
+    # correct env var. Named volume anythingllm-storage persists — no DB wipe.
+    log "setting AnythingLLM model → $1"
+    CHAT_MODEL_NAME="$1" $DC_BASE up -d --force-recreate --no-deps anythingllm >/dev/null 2>&1
     wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
 }
 
