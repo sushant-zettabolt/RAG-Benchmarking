@@ -1,49 +1,51 @@
 # RAG Evaluation + ZenDNN A/B Report — Google Natural Questions
 
-_Dataset: **nq_open** (questions) + **BeIR/nq** (documents) · workspace `nq-bench-97555499`_
+_Dataset: **nq_open** (questions) + **BeIR/nq** (documents) · workspace `nq-bench`_
 
 _Comparison: **baseline** vs **zendnn** — same pipeline, model and queries; only the llama.cpp chat backend differs. Jobs run sequentially._
 
 ## ZenDNN A/B comparison (baseline vs zendnn)
 
+> ⚠️ **Latency comparison not valid:** baseline and zendnn processed different workloads (prompt tokens 4612 vs 4612, completion tokens 38.8 vs 47.2). Per-stage latency scales with token count, so the latency speedups below are apples-to-oranges. Compare the per-token throughput table instead, and check why the runs diverged (see Sanity / Evaluation detail — likely a broken job).
+
 ### Per-stage mean latency
 
 | Stage | baseline (s) | zendnn (s) | speedup |
 |---|---|---|---|
-| Query embedding | 0.053 | 0.054 | 1.01x |
-| Retrieval + overhead | 0.225 | 0.218 | 1.03x |
-| Prompt processing (prefill) | 8.925 | 5.617 | 1.59x |
-| Generation (decode) | 4.076 | 4.090 | 1.003x |
-| LLM total (prefill+decode) | 13.001 | 9.707 | 1.34x |
-| Time to first token | 9.203 | 5.889 | 1.56x |
-| End-to-end (total) | 13.275 | 9.975 | 1.33x |
+| Query embedding | 0.011 | 0.012 | 1.04x |
+| Retrieval + overhead | 0.239 | 0.237 | 1.01x |
+| Prompt processing (prefill) | 13.244 | 8.840 | 1.50x |
+| Generation (decode) | 1.232 | 1.556 | 1.26x |
+| LLM total (prefill+decode) | 14.476 | 10.397 | 1.39x |
+| Time to first token | 13.494 | 9.089 | 1.48x |
+| End-to-end (total) | 14.719 | 10.639 | 1.38x |
 
 ### Inference throughput (tokens/sec, mean)
 
 | Metric | baseline | zendnn | speedup |
 |---|---|---|---|
-| Prefill (prompt) t/s | 381.5 | 607.5 | 1.59x |
-| Decode (generation) t/s | 31.4 | 31.3 | 1.00x |
+| Prefill (prompt) t/s | 348.6 | 522.6 | 1.50x |
+| Decode (generation) t/s | 31.8 | 30.8 | 0.97x |
 
 ### Sanity — should be ~equal across jobs (else contamination/contention)
 
 | Metric | baseline | zendnn |
 |---|---|---|
-| Prompt tokens (mean) | 3396.2 | 3396.2 |
-| Completion tokens (mean) | 128 | 128 |
-| Query embedding (s) | 0.053 | 0.054 |
-| Retrieval + overhead (s) | 0.225 | 0.218 |
-| Match rate (LLM judge) | 0% | 0% |
-| Contains reference (lexical) | 54.0% | 60.0% |
+| Prompt tokens (mean) | 4611.8 | 4611.8 |
+| Completion tokens (mean) | 38.8 | 47.2 |
+| Query embedding (s) | 0.011 | 0.012 |
+| Retrieval + overhead (s) | 0.239 | 0.237 |
+| Match rate (LLM judge) | 40.0% | 40.0% |
+| Contains reference (lexical) | 60.0% | 60.0% |
 
 ### Speedup summary
 
-- Prefill throughput: **1.59x**  (381.5 → 607.5 t/s)
-- Decode throughput:  **1.00x**  (31.4 → 31.3 t/s)
-- LLM inference latency: **1.34x**
-- End-to-end latency: **1.33x**  (13.27s → 9.98s)
+- Prefill throughput: **1.50x**  (348.6 → 522.6 t/s)
+- Decode throughput:  **0.97x**  (31.8 → 30.8 t/s)
+- LLM inference latency: **1.39x**
+- End-to-end latency: **1.38x**  (14.72s → 10.64s)
 
-_ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as expected._
+_Note: throughput (t/s) is the only valid comparison here — the two runs processed different token counts, so latency speedups reflect workload size, not backend speed._
 
 ## Evaluation detail — baseline
 
@@ -51,105 +53,76 @@ _ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as ex
 
 | Metric | Value |
 |---|---|
-| Queries | 100 |
-| Succeeded | 100 |
+| Queries | 5 |
+| Succeeded | 5 |
 | Errored | 0 |
-| **Matched (LLM judge)** | **0 (0%)** |
-| Mean judge score | n/a |
-| Contains reference (lexical) | 54 (54.0%) |
-| Verdicts | none=100 |
-| Documents ingested | 100/100 |
-| Answerable questions (corpus) | 55 |
-| Total tokens (sum) | 352425 |
-| Tokens/query (prompt / completion) | 3396.2 / 128 |
+| **Matched (LLM judge)** | **2 (40.0%)** |
+| Mean judge score | 0.400 |
+| Contains reference (lexical) | 3 (60.0%) |
+| Verdicts | correct=2, incorrect=3 |
+| Documents ingested | 500/500 |
+| Answerable questions (corpus) | 85 |
+| Total tokens (sum) | 23253 |
+| Tokens/query (prompt / completion) | 4611.8 / 38.8 |
 
 ### Latency by stage (successful queries)
 
 | Stage | mean (s) | p50 (s) | p95 (s) | min | max |
 |---|---|---|---|---|---|
-| End-to-end (total) | 13.275 | 13.210 | 14.988 | 11.338 | 15.308 |
-| Time to first token | 9.203 | 9.125 | 10.893 | 7.327 | 11.182 |
-| Query embedding | 0.053 | 0.053 | 0.055 | 0.050 | 0.058 |
-| Retrieval + overhead | 0.225 | 0.223 | 0.261 | 0.185 | 0.288 |
-| Prompt processing (prefill) | 8.925 | 8.839 | 10.611 | 7.062 | 10.895 |
-| Generation (decode) | 4.076 | 4.078 | 4.129 | 4.014 | 4.162 |
-| LLM total (prefill+decode) | 13.001 | 12.928 | 14.712 | 11.076 | 15.028 |
+| End-to-end (total) | 14.719 | 14.729 | 16.638 | 12.736 | 16.638 |
+| Time to first token | 13.494 | 14.020 | 14.390 | 12.191 | 14.390 |
+| Query embedding | 0.011 | 0.011 | 0.011 | 0.011 | 0.011 |
+| Retrieval + overhead | 0.239 | 0.271 | 0.299 | 0.087 | 0.299 |
+| Prompt processing (prefill) | 13.244 | 13.709 | 14.292 | 11.899 | 14.292 |
+| Generation (decode) | 1.232 | 0.916 | 2.255 | 0.551 | 2.255 |
+| LLM total (prefill+decode) | 14.476 | 14.426 | 16.547 | 12.450 | 16.547 |
 
 ### Token usage (successful queries)
 
 | | mean | p50 | p95 | min | max |
 |---|---|---|---|---|---|
-| Prompt tokens | 3396.2 | 3369 | 3901 | 2781 | 4064 |
-| Completion tokens | 128 | 128 | 128 | 128 | 128 |
-| Total tokens | 3524.2 | 3497 | 4029 | 2909 | 4192 |
+| Prompt tokens | 4611.8 | 4692 | 4937 | 4219 | 4937 |
+| Completion tokens | 38.8 | 29 | 70 | 18 | 70 |
+| Total tokens | 4650.6 | 4715 | 5007 | 4237 | 5007 |
 
-### Failed / incorrect queries (100)
+### Failed / incorrect queries (3)
 
 | Q# | question | verdict | reason |
 |---|---|---|---|
-| 0 | when was the last time anyone was on the moon | None |  |
-| 1 | who wrote he ain't heavy he's my brother lyrics | None |  |
-| 2 | how many seasons of the bastard executioner are there | None |  |
-| 3 | when did the eagles win last super bowl | None |  |
-| 4 | who won last year's ncaa women's basketball | None |  |
-| 5 | when did the isle of wight become an island | None |  |
-| 6 | love yourself by justin bieber is about who | None |  |
-| 7 | who was the ruler of england in 1616 | None |  |
-| 8 | what is the hot coffee mod in san andreas | None |  |
-| 9 | what is the maximum data rate for the 802.11a standard select one | None |  |
-| 10 | which state is located in the centre of india | None |  |
-| 11 | who sang i ran all the way home | None |  |
-| 12 | where did the last name wallace come from | None |  |
-| 13 | who was the actor that played ben stone on law and order | None |  |
-| 14 | who does the voice of nala in the lion king | None |  |
-| 15 | who plays gram on the young and the restless | None |  |
-| 16 | what is the oath that new citizens take | None |  |
-| 17 | who is under the mask of darth vader | None |  |
-| 18 | who had a baby at 100 in the bible | None |  |
-| 19 | what age do you need to be to buy a bb gun | None |  |
-| 20 | ethiopia flight 961 crashes in to the sea | None |  |
-| 21 | where was percy jackson and the olympians filmed | None |  |
-| 22 | how many seasons of vampire diaries r there | None |  |
-| 23 | how many episodes are there in dragon ball z | None |  |
-| 24 | who plays auggie in the movie the wonder | None |  |
-| 25 | when was the first australian prime minister elected | None |  |
-| 26 | who plays matthew on anne with an e | None |  |
-| 27 | who is the girl in green day 21 guns | None |  |
-| 28 | who plays joker in batman the dark knight | None |  |
-| 29 | when was the south asian association for regional co-operation (saarc)… | None |  |
-
-_…and 70 more (see the JSON report)._
+| 2 | how many seasons of the bastard executioner are there | incorrect | The answer does not state the correct number of seasons (one) and instead claims |
+| 3 | when did the eagles win last super bowl | incorrect | Candidate says the win was in 2018, but reference states 2017 |
+| 4 | who won last year's ncaa women's basketball | incorrect | The candidate fails to answer and incorrectly claims lack of information, not ma |
 
 ### Example answers
 
 #### Correct
 
-_No correct examples._
-
-#### Incorrect
-
 **Q0: when was the last time anyone was on the moon**  
 - expected: _14 December 1972 UTC | December 1972_  
-- got: The last time humans were on the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt, and they landed on the moon's surface on December 11, 1972. Eugene Cernan was the last person to walk on the moon, and he left the lunar surface on December 14, 1972. Since then, there have been no manned missions to the moon. 
-
-However, in recent years, there have been several unmanned missions to the moon, including the Chinese spacecraft Chang'e 4, which landed  
-- score: n/a (None) — 
+- got: The last time humans visited the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt. They landed on the moon's surface on December 11, 1972, and spent three days conducting scientific experiments and exploring the lunar terrain.  
+- score: 1.00 (correct) — Candidate correctly states the last moon visit was in December 1972, matching the reference.
 
 **Q1: who wrote he ain't heavy he's my brother lyrics**  
 - expected: _Bobby Scott | Bob Russell_  
-- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. However, it was made famous by the 1969 version performed by The Hollies, and later by the 1970 version performed by Neil Sedaka, but the most well-known version is by The Hollies. The song's lyrics were inspired by a phrase from a 1965 song called "He Ain't Heavy" by Kelly Gordon and Bobby Scott, and later Bob Russell added the final line. 
+- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell.  
+- score: 1.00 (correct) — Provides the same authors (Bobby Scott and Bob Russell) as the reference.
 
-The song is most famously associated with the phrase "He ain't heavy, he's my brother," which was originally  
-- score: n/a (None) — 
+#### Incorrect
 
 **Q2: how many seasons of the bastard executioner are there**  
 - expected: _one | one season_  
-- got: I couldn't find any information about a television series called "The Bastard Executioner". If you could provide more context or information about the show, I may be able to help you better. 
+- got: There is no information provided in the given contexts about "The Bastard Executioner".  
+- score: 0.00 (incorrect) — The answer does not state the correct number of seasons (one) and instead claims no information is available.
 
-However, I did find information about a television series called "The Bastard Executioner", which was a short-lived television series that aired on FX from September 15, 2015 to November 17, 2015. The show was cancelled after one season. It starred Kurt Sutter and was a historical drama series. The season had 10 episodes. 
+**Q3: when did the eagles win last super bowl**  
+- expected: _2017_  
+- got: The Eagles won their last Super Bowl in Super Bowl LII (52), which took place on February 4, 2018. They defeated the New England Patriots with a score of 41-33. This was their first Super Bowl win in franchise history.  
+- score: 0.00 (incorrect) — Candidate says the win was in 2018, but reference states 2017
 
-If you are looking for information about a different show, please let me  
-- score: n/a (None) — 
+**Q4: who won last year's ncaa women's basketball**  
+- expected: _South Carolina_  
+- got: Unfortunately, I don't have information on the 2025 NCAA women's basketball championship as my knowledge only goes up to 2023.  
+- score: 0.00 (incorrect) — The candidate fails to answer and incorrectly claims lack of information, not matching the reference answer.
 
 
 ## Evaluation detail — zendnn
@@ -158,97 +131,76 @@ If you are looking for information about a different show, please let me
 
 | Metric | Value |
 |---|---|
-| Queries | 100 |
-| Succeeded | 100 |
+| Queries | 5 |
+| Succeeded | 5 |
 | Errored | 0 |
-| **Matched (LLM judge)** | **0 (0%)** |
-| Mean judge score | n/a |
-| Contains reference (lexical) | 60 (60.0%) |
-| Verdicts | none=100 |
-| Documents ingested | 100/100 |
-| Answerable questions (corpus) | 55 |
-| Total tokens (sum) | 352425 |
-| Tokens/query (prompt / completion) | 3396.2 / 128 |
+| **Matched (LLM judge)** | **2 (40.0%)** |
+| Mean judge score | 0.320 |
+| Contains reference (lexical) | 3 (60.0%) |
+| Verdicts | partial=1, correct=1, incorrect=3 |
+| Documents ingested | 500/500 |
+| Answerable questions (corpus) | 85 |
+| Total tokens (sum) | 23295 |
+| Tokens/query (prompt / completion) | 4611.8 / 47.2 |
 
 ### Latency by stage (successful queries)
 
 | Stage | mean (s) | p50 (s) | p95 (s) | min | max |
 |---|---|---|---|---|---|
-| End-to-end (total) | 9.975 | 9.922 | 11.232 | 8.671 | 11.356 |
-| Time to first token | 5.889 | 5.827 | 7.114 | 4.616 | 7.233 |
-| Query embedding | 0.054 | 0.054 | 0.056 | 0.050 | 0.057 |
-| Retrieval + overhead | 0.218 | 0.217 | 0.242 | 0.184 | 0.274 |
-| Prompt processing (prefill) | 5.617 | 5.563 | 6.825 | 4.360 | 6.945 |
-| Generation (decode) | 4.090 | 4.089 | 4.137 | 4.024 | 4.151 |
-| LLM total (prefill+decode) | 9.707 | 9.649 | 10.953 | 8.418 | 11.074 |
+| End-to-end (total) | 10.639 | 10.307 | 12.839 | 8.704 | 12.839 |
+| Time to first token | 9.089 | 9.581 | 9.656 | 8.213 | 9.656 |
+| Query embedding | 0.012 | 0.011 | 0.013 | 0.011 | 0.013 |
+| Retrieval + overhead | 0.237 | 0.266 | 0.297 | 0.083 | 0.297 |
+| Prompt processing (prefill) | 8.840 | 9.272 | 9.559 | 7.925 | 9.559 |
+| Generation (decode) | 1.556 | 1.256 | 3.190 | 0.497 | 3.190 |
+| LLM total (prefill+decode) | 10.397 | 10.007 | 12.749 | 8.422 | 12.749 |
 
 ### Token usage (successful queries)
 
 | | mean | p50 | p95 | min | max |
 |---|---|---|---|---|---|
-| Prompt tokens | 3396.2 | 3369 | 3901 | 2781 | 4064 |
-| Completion tokens | 128 | 128 | 128 | 128 | 128 |
-| Total tokens | 3524.2 | 3497 | 4029 | 2909 | 4192 |
+| Prompt tokens | 4611.8 | 4692 | 4937 | 4219 | 4937 |
+| Completion tokens | 47.2 | 38 | 95 | 16 | 95 |
+| Total tokens | 4659 | 4715 | 5032 | 4235 | 5032 |
 
-### Failed / incorrect queries (100)
+### Failed / incorrect queries (3)
 
 | Q# | question | verdict | reason |
 |---|---|---|---|
-| 0 | when was the last time anyone was on the moon | None |  |
-| 1 | who wrote he ain't heavy he's my brother lyrics | None |  |
-| 2 | how many seasons of the bastard executioner are there | None |  |
-| 3 | when did the eagles win last super bowl | None |  |
-| 4 | who won last year's ncaa women's basketball | None |  |
-| 5 | when did the isle of wight become an island | None |  |
-| 6 | love yourself by justin bieber is about who | None |  |
-| 7 | who was the ruler of england in 1616 | None |  |
-| 8 | what is the hot coffee mod in san andreas | None |  |
-| 9 | what is the maximum data rate for the 802.11a standard select one | None |  |
-| 10 | which state is located in the centre of india | None |  |
-| 11 | who sang i ran all the way home | None |  |
-| 12 | where did the last name wallace come from | None |  |
-| 13 | who was the actor that played ben stone on law and order | None |  |
-| 14 | who does the voice of nala in the lion king | None |  |
-| 15 | who plays gram on the young and the restless | None |  |
-| 16 | what is the oath that new citizens take | None |  |
-| 17 | who is under the mask of darth vader | None |  |
-| 18 | who had a baby at 100 in the bible | None |  |
-| 19 | what age do you need to be to buy a bb gun | None |  |
-| 20 | ethiopia flight 961 crashes in to the sea | None |  |
-| 21 | where was percy jackson and the olympians filmed | None |  |
-| 22 | how many seasons of vampire diaries r there | None |  |
-| 23 | how many episodes are there in dragon ball z | None |  |
-| 24 | who plays auggie in the movie the wonder | None |  |
-| 25 | when was the first australian prime minister elected | None |  |
-| 26 | who plays matthew on anne with an e | None |  |
-| 27 | who is the girl in green day 21 guns | None |  |
-| 28 | who plays joker in batman the dark knight | None |  |
-| 29 | when was the south asian association for regional co-operation (saarc)… | None |  |
-
-_…and 70 more (see the JSON report)._
+| 2 | how many seasons of the bastard executioner are there | incorrect | The candidate does not provide the answer and claims inability to identify the s |
+| 3 | when did the eagles win last super bowl | incorrect | Candidate gives 2018 date, but reference answer is 2017 |
+| 4 | who won last year's ncaa women's basketball | incorrect | The answer does not give South Carolina and gives unrelated information about 20 |
 
 ### Example answers
 
 #### Correct
 
-_No correct examples._
-
-#### Incorrect
-
 **Q0: when was the last time anyone was on the moon**  
 - expected: _14 December 1972 UTC | December 1972_  
-- got: I do not have any information about anyone being on the moon in the provided context. The provided information focuses on various topics including Chinese New Year, Wake Island, and Walter Frederick Morrison.  If you're looking for information about the last time humans visited the moon, I can tell you that the last time humans visited the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt. Cernan and Schmitt spent three days on the lunar surface, conducting scientific experiments and collecting samples. They returned to Earth on December 19,  
-- score: n/a (None) — 
+- got: The last time anyone was on the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt. They spent three days on the moon's surface, conducting scientific experiments and exploring the lunar terrain. Eugene Cernan was the last person to walk on the moon, stepping off the lunar module Challenger onto the moon's surface on December 11, 1972.  
+- score: 0.60 (partial) — Provides the correct month/year (December 1972) but gives an incorrect specific date (December 11) for the last moonwalk.
 
 **Q1: who wrote he ain't heavy he's my brother lyrics**  
 - expected: _Bobby Scott | Bob Russell_  
-- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. However, the song was originally titled "He Ain't Heavy" and was written in 1962 by Bobby Scott, with the music and original lyrics written by Scott, and the original title and lyrics written by Bob Russell. The song was later recorded by the Welsh singer Kenny Lynch in 1963. The song became a worldwide hit in 1969 when it was recorded by the American singer-songwriter and musician Neil Diamond. The most well-known version of the song was recorded by The Hollies in 1969, with  
-- score: n/a (None) — 
+- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell.  
+- score: 1.00 (correct) — Candidate correctly states Bobby Scott and Bob Russell wrote the song, matching the reference.
+
+#### Incorrect
 
 **Q2: how many seasons of the bastard executioner are there**  
 - expected: _one | one season_  
-- got: I couldn't find any information about a television series called "The Bastard Executioner". However, I did find that there was a short-lived television series called "The Bastard Executioner" which was a historical drama that aired on FX for one season, from September 15, 2015 to November 17, 2015. It was created by Kurt Sutter and starred Kurt Sutter, Flora Spencer-Longhurst, and Ed Sinclair. The series only had one season. If you are referring to a different series or show, please provide more information or context. I can try to help you answer your question then  
-- score: n/a (None) — 
+- got: I am unable to identify the Bastard Executioner in the given text.  
+- score: 0.00 (incorrect) — The candidate does not provide the answer and claims inability to identify the show.
+
+**Q3: when did the eagles win last super bowl**  
+- expected: _2017_  
+- got: The Philadelphia Eagles won their last Super Bowl in Super Bowl LII (52) on February 4, 2018, when they defeated the New England Patriots 41-33.  
+- score: 0.00 (incorrect) — Candidate gives 2018 date, but reference answer is 2017
+
+**Q4: who won last year's ncaa women's basketball**  
+- expected: _South Carolina_  
+- got: The information provided does not explicitly state who won the NCAA women's basketball championship from the last year mentioned which would be 2015, 2016, 2017, 2018 however it does provide information about the team that won the championship in 2016 which was the UConn Huskies.  
+- score: 0.00 (incorrect) — The answer does not give South Carolina and gives unrelated information about 2016 UConn.
 
 
 ---
