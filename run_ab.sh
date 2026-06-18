@@ -144,6 +144,22 @@ enable_fixed_decode() {  # N
     DOJUDGE_ARGS=""   # judge runs even in fixed-decode mode
 }
 
+# Embed warmup: fire 2 pre-queries directly at llama-embed so the server is
+# fully initialised before the first measured query. Without this the embed
+# server is cold for the baseline job and warm for zendnn (having processed
+# all baseline queries), producing a spurious ~2x latency difference.
+EMBED_WARMUP_ROUNDS="${EMBED_WARMUP_ROUNDS:-2}"
+EMBED_WARMUP_TEXT="The quick brown fox jumps over the lazy dog. Warmup query for embedding server initialisation."
+warmup_embed() {
+    log "warming up embed server — $EMBED_WARMUP_ROUNDS rounds ..."
+    for i in $(seq 1 "$EMBED_WARMUP_ROUNDS"); do
+        curl -fsS -m 30 "http://localhost:${EMBED_PORT}/v1/embeddings" \
+            -H "Content-Type: application/json" \
+            -d "{\"input\":\"$EMBED_WARMUP_TEXT\",\"model\":\"embed-model\"}" >/dev/null 2>&1 || true
+        log "  embed warmup $i/$EMBED_WARMUP_ROUNDS done"
+    done
+}
+
 # Direct warmup: send a 512+ token prompt straight to llama-server (bypasses the
 # RAG pipeline) so ZenDNN JIT-compiles its kernels before any measured work.
 # Repeats WARMUP_ROUNDS times to stabilise. Prompt is ~600 tokens of filler.
@@ -225,6 +241,8 @@ run_job() {  # job bindir libdir algo
 }
 
 [ -n "$AB_FIXED_DECODE" ] && enable_fixed_decode "$AB_FIXED_DECODE"
+
+warmup_embed
 
 run_job "$JOB_A" "$AB_BASELINE_BINDIR" "$AB_BASELINE_BINDIR" ""
 run_job "$JOB_B" "$AB_ZENDNN_BINDIR"   "$AB_ZENDNN_LIBDIR"   "$AB_ZENDNN_ALGO"
