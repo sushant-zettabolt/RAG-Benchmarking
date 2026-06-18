@@ -107,10 +107,7 @@ def comparison_sections(a, b, h="##"):
         ("End-to-end (total)", "total_s"),
     ]:
         sp = speedup(a[key], b[key], lower_better=True)
-        # Embed server uses the same baseline binary for both jobs — any
-        # difference is measurement noise, not a real speedup.
-        label_sp = "n/a (same binary)" if key == "embed_s" else speedup_label(sp)
-        o.append(f"| {label} | {f(a[key],3)} | {f(b[key],3)} | {label_sp} |")
+        o.append(f"| {label} | {f(a[key],3)} | {f(b[key],3)} | {speedup_label(sp)} |")
 
     o.append(f"\n{h} Inference throughput (tokens/sec, mean)\n")
     o.append(f"| Metric | {JOB_A} | {JOB_B} | speedup |")
