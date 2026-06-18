@@ -107,10 +107,7 @@ def comparison_sections(a, b, h="##"):
         ("End-to-end (total)", "total_s"),
     ]:
         sp = speedup(a[key], b[key], lower_better=True)
-        # Embed runs the same baseline binary for both jobs (ZenDNN falls back
-        # to baseline for the small token counts used in query embedding).
-        label_sp = "n/a (same binary)" if key == "embed_s" else speedup_label(sp)
-        o.append(f"| {label} | {f(a[key],3)} | {f(b[key],3)} | {label_sp} |")
+        o.append(f"| {label} | {f(a[key],3)} | {f(b[key],3)} | {speedup_label(sp)} |")
 
     o.append(f"\n{h} Inference throughput (tokens/sec, mean)\n")
     o.append(f"| Metric | {JOB_A} | {JOB_B} | speedup |")
