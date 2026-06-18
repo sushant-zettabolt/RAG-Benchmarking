@@ -12,9 +12,9 @@ services:
     image: nqrag-llama:local
     container_name: nqrag-llama-chat
     user: "${HOST_UID:-1002}:${HOST_GID:-1002}"
-    # CPU pinning via Docker cpuset (cgroup). Both llama-chat and llama-embed
-    # share socket 1 (96-191); they are naturally sequential in the RAG pipeline
-    # so they rarely compete. SYS_NICE is kept for OMP thread priority.
+    # CPU pinning via Docker cpuset (cgroup). Chat gets socket 1 exclusively;
+    # embed runs on socket 0 to avoid L3 cache pollution on the chat socket.
+    # SYS_NICE is kept for OMP thread priority.
     cpuset: ${CHAT_CPUSET:-}
     cap_add:
       - SYS_NICE
@@ -57,7 +57,7 @@ services:
     image: nqrag-llama:local
     container_name: nqrag-llama-embed
     user: "${HOST_UID:-1002}:${HOST_GID:-1002}"
-    # Shares socket 1 cpuset with llama-chat (see llama-chat comment above).
+    # Runs on socket 0 (shares with litellm) to keep socket 1 clean for chat.
     cpuset: ${EMBED_CPUSET:-}
     cap_add:
       - SYS_NICE
@@ -236,6 +236,7 @@ services:
       JUDGE_THRESHOLD: ${JUDGE_THRESHOLD:-0.5}
       JUDGE_BASE_URL: ${JUDGE_BASE_URL:-}
       JUDGE_API_KEY: ${JUDGE_API_KEY:-}
+      JUDGE_SUBSCRIPTION_KEY: ${JUDGE_SUBSCRIPTION_KEY:-}
       WARMUP: ${WARMUP:-1}
       EVAL_LIMIT: ${EVAL_LIMIT:-}
       DATA_DIR: /data

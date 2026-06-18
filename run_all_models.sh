@@ -8,6 +8,14 @@ log() { echo "[batch $(date '+%H:%M:%S')] $*"; }
 die() { echo "[batch] ERROR: $*" >&2; exit 1; }
 mkdir -p reports
 
+stop_all() {
+    log "stopping all containers ..."
+    docker compose -f docker-compose.yml -f docker-compose.ab.yml down >/dev/null 2>&1 || true
+    docker compose down >/dev/null 2>&1 || true
+    log "all containers stopped."
+}
+trap stop_all EXIT INT TERM
+
 patch_model() {  # path
     sed -i "s|^CHAT_MODEL_PATH=.*|CHAT_MODEL_PATH=$1|" .env
 }
@@ -16,7 +24,7 @@ run_model() {  # slug container_model_path
     local slug="$1" path="$2"
     log "══════════════ MODEL: $slug ══════════════"
     patch_model "$path"
-    bash run_ab.sh
+    AB_KEEP_RUNNING=1 bash run_ab.sh
     cp data/results/report_ab.md     "reports/report_ab_${slug}.md"
     cp data/results/report_ab.json   "reports/report_ab_${slug}.json"
     cp data/results/metrics_baseline.jsonl "reports/metrics_${slug}_baseline.jsonl"

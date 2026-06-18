@@ -20,11 +20,12 @@ EMBED_METRICS_URL = os.environ.get("EMBED_METRICS_URL", "http://llama-embed:8080
 ALLM_KEY          = os.environ.get("ALLM_KEY", "")
 LITELLM_KEY       = os.environ.get("LITELLM_MASTER_KEY", "sk-bench-master")
 SLUG              = os.environ.get("SLUG", "nq-bench")
-# External judge (e.g. DeepSeek). When JUDGE_BASE_URL is set, judge_answer()
-# posts to that endpoint with JUDGE_API_KEY instead of routing through LiteLLM.
-# Example: JUDGE_BASE_URL=https://api.deepseek.com/v1  JUDGE_MODEL=deepseek-chat
+# External judge. When JUDGE_BASE_URL is set, judge_answer() posts to that
+# endpoint instead of routing through LiteLLM. Auth: either Bearer token
+# (JUDGE_API_KEY) or subscription-key header (JUDGE_SUBSCRIPTION_KEY).
 JUDGE_BASE_URL    = os.environ.get("JUDGE_BASE_URL", "").rstrip("/")
 JUDGE_API_KEY     = os.environ.get("JUDGE_API_KEY", "")
+JUDGE_SUB_KEY     = os.environ.get("JUDGE_SUBSCRIPTION_KEY", "")
 DATA_DIR          = os.environ.get("DATA_DIR", "/data")
 
 DOCS_DIR      = os.path.join(DATA_DIR, "docs")
@@ -208,22 +209,25 @@ def judge_answer(question, references, candidate, model, timeout=120):
         "model": model,
         "messages": [{"role": "user", "content": user}],
         "temperature": 0,
-        "max_tokens": 512,
+        "max_completion_tokens": 2048,
     }
-    if JUDGE_BASE_URL and JUDGE_API_KEY:
+    if JUDGE_BASE_URL and (JUDGE_API_KEY or JUDGE_SUB_KEY):
         url = f"{JUDGE_BASE_URL}/chat/completions"
-        auth = f"Bearer {JUDGE_API_KEY}"
+        hdrs = {"Content-Type": "application/json"}
+        if JUDGE_SUB_KEY:
+            hdrs["Ocp-Apim-Subscription-Key"] = JUDGE_SUB_KEY
+            hdrs["user"] = os.environ.get("USER", "bench")
+        if JUDGE_API_KEY:
+            hdrs["Authorization"] = f"Bearer {JUDGE_API_KEY}"
     else:
         url = f"{LITELLM_URL}/v1/chat/completions"
-        auth = f"Bearer {LITELLM_KEY}"
+        hdrs = {"Authorization": f"Bearer {LITELLM_KEY}",
+                "Content-Type": "application/json"}
     try:
-        r = requests.post(url,
-                          headers={"Authorization": auth,
-                                   "Content-Type": "application/json"},
-                          json=body, timeout=timeout)
+        r = requests.post(url, headers=hdrs, json=body, timeout=timeout)
         data = r.json()
         msg = data["choices"][0]["message"]
-        content = msg.get("content") or msg.get("reasoning_content") or ""
+        content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning") or ""
         usage = data.get("usage", {})
         parsed = _parse_judge(content)
         parsed["raw"] = content

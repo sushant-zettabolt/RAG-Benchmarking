@@ -26,8 +26,6 @@ import common as C
 QUERY_MODE     = os.environ.get("QUERY_MODE", "query")
 JUDGE_MODEL    = os.environ.get("JUDGE_MODEL", "chat-model")
 JUDGE_THRESH   = C.envf("JUDGE_THRESHOLD", 0.5)
-# Quality judging is meaningless in fixed-decode benchmark mode (answers are
-# truncated at n_predict), so run_ab.sh sets DO_JUDGE=0 there to skip it.
 DO_JUDGE       = os.environ.get("DO_JUDGE", "1") != "0"
 WARMUP         = C.envi("WARMUP", 1)
 EVAL_LIMIT     = C.envi("EVAL_LIMIT", 0)

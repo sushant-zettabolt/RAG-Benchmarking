@@ -73,7 +73,7 @@ wait_for() {  # name url tries
 }
 
 log "ensuring all services are up (chat + embed + support) ..."
-$DC_BASE up -d llama-chat llama-embed litellm prometheus pushgateway anythingllm >/dev/null
+$DC_BASE up -d llama-chat llama-embed litellm prometheus pushgateway anythingllm >/dev/null 2>&1
 [ -f data/ingest_metadata.json ] || die "no ingested data — run: make ingest"
 
 wait_for "llama-chat"  "http://localhost:${CHAT_PORT}/health"  240
@@ -87,15 +87,35 @@ log "all services healthy — embed server stays up for the entire run"
 # n_predict=N) so both backends emit exactly N decode tokens. Restored on exit.
 DOJUDGE_ARGS=""
 BENCH_ACTIVE=0
-restore_stack() {
-    [ "$BENCH_ACTIVE" = "1" ] || return 0
-    log "restoring stack after fixed-decode run (model→chat-model, litellm.yaml) ..."
-    [ -f "$LITELLM_YAML.abbak" ] && mv -f "$LITELLM_YAML.abbak" "$LITELLM_YAML"
-    CHAT_MODEL_NAME=chat-model $DC_BASE up -d --force-recreate --no-deps anythingllm >/dev/null 2>&1 || true
-    $DC_BASE restart litellm >/dev/null 2>&1 || true
-    BENCH_ACTIVE=0
+AB_KEEP_RUNNING="${AB_KEEP_RUNNING:-0}"
+restore_and_stop() {
+    if [ "$BENCH_ACTIVE" = "1" ]; then
+        log "restoring litellm.yaml ..."
+        [ -f "$LITELLM_YAML.abbak" ] && mv -f "$LITELLM_YAML.abbak" "$LITELLM_YAML"
+        BENCH_ACTIVE=0
+    fi
+    if [ "$AB_KEEP_RUNNING" = "1" ]; then
+        log "AB_KEEP_RUNNING=1 — leaving containers up for next model."
+    else
+        log "stopping all containers ..."
+        $DC_AB down >/dev/null 2>&1 || true
+        $DC_BASE down >/dev/null 2>&1 || true
+        log "all containers stopped."
+    fi
 }
-trap restore_stack EXIT INT TERM
+trap restore_and_stop EXIT INT TERM
+
+allm_set_model() {  # model_name — update AnythingLLM's LLM model preference in its DB
+    docker exec nqrag-anythingllm python3 -c "
+import sqlite3
+conn = sqlite3.connect('/app/server/storage/anythingllm.db')
+for label in ('GenericOpenAiModelPref', 'LLMPreference'):
+    conn.execute('UPDATE system_settings SET value=? WHERE label=?', ('$1', label))
+conn.commit(); conn.close(); print('allm model →', '$1')
+"
+    docker restart nqrag-anythingllm >/dev/null 2>&1
+    wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
+}
 
 enable_fixed_decode() {  # N
     local n="$1"
@@ -104,14 +124,30 @@ enable_fixed_decode() {  # N
     log "════ fixed-decode mode ON: forcing exactly $n decode tokens/query on both backends ════"
     cp -f "$LITELLM_YAML" "$LITELLM_YAML.abbak"
     BENCH_ACTIVE=1
-    # rewrite the (integer) n_predict in the chat-model-bench block
     sed -i -E "s/^([[:space:]]*n_predict:[[:space:]]*)[0-9]+/\1$n/" "$LITELLM_YAML"
-    $DC_BASE restart litellm >/dev/null
+    $DC_BASE restart litellm >/dev/null 2>&1
     wait_for "litellm" "http://localhost:${LITELLM_PORT}/health/readiness" 30 || true
-    # recreate AnythingLLM so it picks up GENERIC_OPEN_AI_MODEL_PREF=chat-model-bench
-    CHAT_MODEL_NAME=chat-model-bench $DC_BASE up -d --force-recreate --no-deps anythingllm >/dev/null
-    wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
+    allm_set_model "chat-model-bench"
     DOJUDGE_ARGS=""   # judge runs even in fixed-decode mode
+}
+
+# Direct warmup: send a 512+ token prompt straight to llama-server (bypasses the
+# RAG pipeline) so ZenDNN JIT-compiles its kernels before any measured work.
+# Repeats WARMUP_ROUNDS times to stabilise. Prompt is ~600 tokens of filler.
+WARMUP_ROUNDS="${WARMUP_ROUNDS:-3}"
+WARMUP_PROMPT="$(printf 'The quick brown fox jumps over the lazy dog. %.0s' $(seq 1 80))"
+warmup_chat() {  # job
+    local job="$1"
+    log "warming up chat server ($job) — $WARMUP_ROUNDS rounds, ~600 tokens each ..."
+    for i in $(seq 1 "$WARMUP_ROUNDS"); do
+        local t0=$(date +%s%N)
+        curl -fsS -m 300 "http://localhost:${CHAT_PORT}/v1/chat/completions" \
+            -H 'Content-Type: application/json' \
+            -d "{\"model\":\"chat-model\",\"messages\":[{\"role\":\"user\",\"content\":\"$WARMUP_PROMPT\"}],\"max_tokens\":16,\"temperature\":0}" >/dev/null 2>&1
+        local t1=$(date +%s%N)
+        local ms=$(( (t1 - t0) / 1000000 ))
+        log "  warmup $i/$WARMUP_ROUNDS done (${ms}ms)"
+    done
 }
 
 # Push the current backend name to Pushgateway so Grafana can display it.
@@ -140,12 +176,12 @@ verify_cache_disabled() {  # job
     b1="$(chat_ptok)"
     curl -fsS -m 600 "http://localhost:${ALLM_PORT}/api/v1/workspace/${SLUG}/stream-chat" \
         -H "Authorization: Bearer ${ALLM_KEY}" -H 'Content-Type: application/json' \
-        -d "{\"message\":\"$q\",\"mode\":\"query\",\"sessionId\":\"$s1\"}" >/dev/null 2>&1
+        -d "{\"message\":\"$q\",\"mode\":\"query\",\"sessionId\":\"$s1\"}" >/dev/null 2>&1 || true
     a1="$(chat_ptok)"
     b2="$(chat_ptok)"
     curl -fsS -m 600 "http://localhost:${ALLM_PORT}/api/v1/workspace/${SLUG}/stream-chat" \
         -H "Authorization: Bearer ${ALLM_KEY}" -H 'Content-Type: application/json' \
-        -d "{\"message\":\"$q\",\"mode\":\"query\",\"sessionId\":\"$s2\"}" >/dev/null 2>&1
+        -d "{\"message\":\"$q\",\"mode\":\"query\",\"sessionId\":\"$s2\"}" >/dev/null 2>&1 || true
     a2="$(chat_ptok)"
     d1=$(awk "BEGIN{print $a1-$b1}"); d2=$(awk "BEGIN{print $a2-$b2}")
     # ratio of the smaller to larger delta; ~1.0 = cache disabled, ~0 = reuse
@@ -165,10 +201,11 @@ run_job() {  # job bindir libdir algo
     CHAT_BINDIR="$bindir" CHAT_LIBDIR="${libdir:-$bindir}" \
         EMBED_BINDIR="$AB_BASELINE_BINDIR" EMBED_LIBDIR="$AB_BASELINE_BINDIR" \
         ZENDNNL_MATMUL_ALGO="$algo" AB_JOB="$job" \
-        $DC_AB up -d --force-recreate --no-deps llama-chat
+        $DC_AB up -d --force-recreate --no-deps llama-chat >/dev/null 2>&1
     wait_for "chat ($job)" "http://localhost:${CHAT_PORT}/health" 120 \
         || { $DC_AB logs --tail 40 llama-chat; die "chat server ($job) did not come up"; }
     docker logs nqrag-llama-chat 2>&1 | grep -iE 'zendnn|backend' | head -3 || true
+    warmup_chat "$job"
     verify_cache_disabled "$job"
     push_backend "$job"
     log "evaluating job '$job' ..."
