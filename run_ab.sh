@@ -111,7 +111,7 @@ enable_fixed_decode() {  # N
     # recreate AnythingLLM so it picks up GENERIC_OPEN_AI_MODEL_PREF=chat-model-bench
     CHAT_MODEL_NAME=chat-model-bench $DC_BASE up -d --force-recreate --no-deps anythingllm >/dev/null
     wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
-    DOJUDGE_ARGS="-e DO_JUDGE=0"   # judging truncated answers is meaningless
+    DOJUDGE_ARGS=""   # judge runs even in fixed-decode mode
 }
 
 # Push the current backend name to Pushgateway so Grafana can display it.

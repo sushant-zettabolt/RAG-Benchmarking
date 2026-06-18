@@ -10,38 +10,38 @@ _Comparison: **baseline** vs **zendnn** — same pipeline, model and queries; on
 
 | Stage | baseline (s) | zendnn (s) | speedup |
 |---|---|---|---|
-| Query embedding | 0.053 | 0.054 | 1.01x |
-| Retrieval + overhead | 0.225 | 0.218 | 1.03x |
-| Prompt processing (prefill) | 8.925 | 5.617 | 1.59x |
-| Generation (decode) | 4.076 | 4.090 | 1.003x |
-| LLM total (prefill+decode) | 13.001 | 9.707 | 1.34x |
-| Time to first token | 9.203 | 5.889 | 1.56x |
-| End-to-end (total) | 13.275 | 9.975 | 1.33x |
+| Query embedding | 0.054 | 0.053 | 1.01x |
+| Retrieval + overhead | 0.243 | 0.241 | 1.01x |
+| Prompt processing (prefill) | 26.897 | 12.643 | 2.13x |
+| Generation (decode) | 10.632 | 10.627 | 1.000x |
+| LLM total (prefill+decode) | 37.530 | 23.271 | 1.61x |
+| Time to first token | 27.194 | 12.938 | 2.10x |
+| End-to-end (total) | 37.822 | 23.561 | 1.61x |
 
 ### Inference throughput (tokens/sec, mean)
 
 | Metric | baseline | zendnn | speedup |
 |---|---|---|---|
-| Prefill (prompt) t/s | 381.5 | 607.5 | 1.59x |
-| Decode (generation) t/s | 31.4 | 31.3 | 1.00x |
+| Prefill (prompt) t/s | 149.7 | 319.0 | 2.13x |
+| Decode (generation) t/s | 12.0 | 12.0 | 1.00x |
 
 ### Sanity — should be ~equal across jobs (else contamination/contention)
 
 | Metric | baseline | zendnn |
 |---|---|---|
-| Prompt tokens (mean) | 3396.2 | 3396.2 |
+| Prompt tokens (mean) | 4022.4 | 4022.4 |
 | Completion tokens (mean) | 128 | 128 |
-| Query embedding (s) | 0.053 | 0.054 |
-| Retrieval + overhead (s) | 0.225 | 0.218 |
+| Query embedding (s) | 0.054 | 0.053 |
+| Retrieval + overhead (s) | 0.243 | 0.241 |
 | Match rate (LLM judge) | 0% | 0% |
-| Contains reference (lexical) | 54.0% | 60.0% |
+| Contains reference (lexical) | 41.0% | 45.0% |
 
 ### Speedup summary
 
-- Prefill throughput: **1.59x**  (381.5 → 607.5 t/s)
-- Decode throughput:  **1.00x**  (31.4 → 31.3 t/s)
-- LLM inference latency: **1.34x**
-- End-to-end latency: **1.33x**  (13.27s → 9.98s)
+- Prefill throughput: **2.13x**  (149.7 → 319.0 t/s)
+- Decode throughput:  **1.00x**  (12.0 → 12.0 t/s)
+- LLM inference latency: **1.61x**
+- End-to-end latency: **1.61x**  (37.82s → 23.56s)
 
 _ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as expected._
 
@@ -56,32 +56,32 @@ _ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as ex
 | Errored | 0 |
 | **Matched (LLM judge)** | **0 (0%)** |
 | Mean judge score | n/a |
-| Contains reference (lexical) | 54 (54.0%) |
+| Contains reference (lexical) | 41 (41.0%) |
 | Verdicts | none=100 |
 | Documents ingested | 100/100 |
 | Answerable questions (corpus) | 55 |
-| Total tokens (sum) | 352425 |
-| Tokens/query (prompt / completion) | 3396.2 / 128 |
+| Total tokens (sum) | 415036 |
+| Tokens/query (prompt / completion) | 4022.4 / 128 |
 
 ### Latency by stage (successful queries)
 
 | Stage | mean (s) | p50 (s) | p95 (s) | min | max |
 |---|---|---|---|---|---|
-| End-to-end (total) | 13.275 | 13.210 | 14.988 | 11.338 | 15.308 |
-| Time to first token | 9.203 | 9.125 | 10.893 | 7.327 | 11.182 |
-| Query embedding | 0.053 | 0.053 | 0.055 | 0.050 | 0.058 |
-| Retrieval + overhead | 0.225 | 0.223 | 0.261 | 0.185 | 0.288 |
-| Prompt processing (prefill) | 8.925 | 8.839 | 10.611 | 7.062 | 10.895 |
-| Generation (decode) | 4.076 | 4.078 | 4.129 | 4.014 | 4.162 |
-| LLM total (prefill+decode) | 13.001 | 12.928 | 14.712 | 11.076 | 15.028 |
+| End-to-end (total) | 37.822 | 37.393 | 42.249 | 32.555 | 43.993 |
+| Time to first token | 27.194 | 26.766 | 31.571 | 21.953 | 33.278 |
+| Query embedding | 0.054 | 0.054 | 0.055 | 0.051 | 0.056 |
+| Retrieval + overhead | 0.243 | 0.241 | 0.269 | 0.202 | 0.308 |
+| Prompt processing (prefill) | 26.897 | 26.460 | 31.280 | 21.670 | 32.963 |
+| Generation (decode) | 10.632 | 10.631 | 10.698 | 10.542 | 10.721 |
+| LLM total (prefill+decode) | 37.530 | 37.087 | 41.961 | 32.262 | 43.683 |
 
 ### Token usage (successful queries)
 
 | | mean | p50 | p95 | min | max |
 |---|---|---|---|---|---|
-| Prompt tokens | 3396.2 | 3369 | 3901 | 2781 | 4064 |
+| Prompt tokens | 4022.4 | 3995 | 4631 | 3305 | 4787 |
 | Completion tokens | 128 | 128 | 128 | 128 | 128 |
-| Total tokens | 3524.2 | 3497 | 4029 | 2909 | 4192 |
+| Total tokens | 4150.4 | 4123 | 4759 | 3433 | 4915 |
 
 ### Failed / incorrect queries (100)
 
@@ -130,25 +130,21 @@ _No correct examples._
 
 **Q0: when was the last time anyone was on the moon**  
 - expected: _14 December 1972 UTC | December 1972_  
-- got: The last time humans were on the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt, and they landed on the moon's surface on December 11, 1972. Eugene Cernan was the last person to walk on the moon, and he left the lunar surface on December 14, 1972. Since then, there have been no manned missions to the moon. 
-
-However, in recent years, there have been several unmanned missions to the moon, including the Chinese spacecraft Chang'e 4, which landed  
+- got: The last time anyone was on the moon was during the Apollo 17 mission in December 1972. Astronauts Eugene Cernan and Harrison Schmitt spent about 75 hours on the lunar surface, while astronaut Ronald Evans remained in the Command Module in lunar orbit. Since then, no human has returned to the moon. However, there have been numerous robotic missions to the moon by various space agencies and private companies. China's Chang'e 5 mission, for example, successfully landed on the moon in December 2020 and returned lunar  
 - score: n/a (None) — 
 
 **Q1: who wrote he ain't heavy he's my brother lyrics**  
 - expected: _Bobby Scott | Bob Russell_  
-- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. However, it was made famous by the 1969 version performed by The Hollies, and later by the 1970 version performed by Neil Sedaka, but the most well-known version is by The Hollies. The song's lyrics were inspired by a phrase from a 1965 song called "He Ain't Heavy" by Kelly Gordon and Bobby Scott, and later Bob Russell added the final line. 
-
-The song is most famously associated with the phrase "He ain't heavy, he's my brother," which was originally  
+- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. However, the lyrics you are referring to are not explicitly mentioned in the provided context. The song is well-known for its lyrics about helping others and carrying their burdens, but the specific line "he ain't heavy, he's my brother" is the most famous part of the chorus. The writers Bobby Scott and Bob Russell created this song, which became a hit for The Hollies in 1969. The lyrics of the song promote a message of love, support, and  
 - score: n/a (None) — 
 
 **Q2: how many seasons of the bastard executioner are there**  
 - expected: _one | one season_  
-- got: I couldn't find any information about a television series called "The Bastard Executioner". If you could provide more context or information about the show, I may be able to help you better. 
+- got: I don't have information on a series called "the bastard executioner." However, I can provide information on the series "Prison Break" and "The O.C." that were mentioned in the provided context.
 
-However, I did find information about a television series called "The Bastard Executioner", which was a short-lived television series that aired on FX from September 15, 2015 to November 17, 2015. The show was cancelled after one season. It starred Kurt Sutter and was a historical drama series. The season had 10 episodes. 
+Prison Break has five seasons. The first four seasons aired from 2005 to 2009, and the fifth season was aired in 2017.
 
-If you are looking for information about a different show, please let me  
+The O.C. has four seasons. The first three seasons aired from 2003 to 2006, and the fourth and final season aired from November  
 - score: n/a (None) — 
 
 
@@ -163,32 +159,32 @@ If you are looking for information about a different show, please let me
 | Errored | 0 |
 | **Matched (LLM judge)** | **0 (0%)** |
 | Mean judge score | n/a |
-| Contains reference (lexical) | 60 (60.0%) |
+| Contains reference (lexical) | 45 (45.0%) |
 | Verdicts | none=100 |
 | Documents ingested | 100/100 |
 | Answerable questions (corpus) | 55 |
-| Total tokens (sum) | 352425 |
-| Tokens/query (prompt / completion) | 3396.2 / 128 |
+| Total tokens (sum) | 415036 |
+| Tokens/query (prompt / completion) | 4022.4 / 128 |
 
 ### Latency by stage (successful queries)
 
 | Stage | mean (s) | p50 (s) | p95 (s) | min | max |
 |---|---|---|---|---|---|
-| End-to-end (total) | 9.975 | 9.922 | 11.232 | 8.671 | 11.356 |
-| Time to first token | 5.889 | 5.827 | 7.114 | 4.616 | 7.233 |
-| Query embedding | 0.054 | 0.054 | 0.056 | 0.050 | 0.057 |
-| Retrieval + overhead | 0.218 | 0.217 | 0.242 | 0.184 | 0.274 |
-| Prompt processing (prefill) | 5.617 | 5.563 | 6.825 | 4.360 | 6.945 |
-| Generation (decode) | 4.090 | 4.089 | 4.137 | 4.024 | 4.151 |
-| LLM total (prefill+decode) | 9.707 | 9.649 | 10.953 | 8.418 | 11.074 |
+| End-to-end (total) | 23.561 | 23.200 | 25.743 | 20.814 | 26.958 |
+| Time to first token | 12.938 | 12.552 | 15.098 | 10.222 | 16.252 |
+| Query embedding | 0.053 | 0.053 | 0.055 | 0.050 | 0.057 |
+| Retrieval + overhead | 0.241 | 0.241 | 0.270 | 0.202 | 0.304 |
+| Prompt processing (prefill) | 12.643 | 12.268 | 14.813 | 9.936 | 15.937 |
+| Generation (decode) | 10.627 | 10.627 | 10.697 | 10.517 | 10.714 |
+| LLM total (prefill+decode) | 23.271 | 22.900 | 25.456 | 20.530 | 26.651 |
 
 ### Token usage (successful queries)
 
 | | mean | p50 | p95 | min | max |
 |---|---|---|---|---|---|
-| Prompt tokens | 3396.2 | 3369 | 3901 | 2781 | 4064 |
+| Prompt tokens | 4022.4 | 3995 | 4631 | 3305 | 4787 |
 | Completion tokens | 128 | 128 | 128 | 128 | 128 |
-| Total tokens | 3524.2 | 3497 | 4029 | 2909 | 4192 |
+| Total tokens | 4150.4 | 4123 | 4759 | 3433 | 4915 |
 
 ### Failed / incorrect queries (100)
 
@@ -237,17 +233,23 @@ _No correct examples._
 
 **Q0: when was the last time anyone was on the moon**  
 - expected: _14 December 1972 UTC | December 1972_  
-- got: I do not have any information about anyone being on the moon in the provided context. The provided information focuses on various topics including Chinese New Year, Wake Island, and Walter Frederick Morrison.  If you're looking for information about the last time humans visited the moon, I can tell you that the last time humans visited the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt. Cernan and Schmitt spent three days on the lunar surface, conducting scientific experiments and collecting samples. They returned to Earth on December 19,  
+- got: The last time anyone was on the moon was during the Apollo 17 mission in December 1972. Astronauts Eugene Cernan and Harrison Schmitt spent about 75 hours on the lunar surface, while Ron Evans orbited overhead in the Command Module. Cernan was the last person to leave the moon, and no one has returned since. (Source: NASA website)
+
+(Note: This answer is based on the provided context, but it is not directly stated in any of the given texts. I inferred the answer by combining the knowledge that the Apollo  
 - score: n/a (None) — 
 
 **Q1: who wrote he ain't heavy he's my brother lyrics**  
 - expected: _Bobby Scott | Bob Russell_  
-- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. However, the song was originally titled "He Ain't Heavy" and was written in 1962 by Bobby Scott, with the music and original lyrics written by Scott, and the original title and lyrics written by Bob Russell. The song was later recorded by the Welsh singer Kenny Lynch in 1963. The song became a worldwide hit in 1969 when it was recorded by the American singer-songwriter and musician Neil Diamond. The most well-known version of the song was recorded by The Hollies in 1969, with  
+- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. The Hollies and Neil Diamond are among the notable artists who have recorded versions of this song. The lyrics express a sense of camaraderie and shared responsibility, as the speaker proclaims that they will help their struggling companion, stating "he's my brother." The song has been performed at various events as a symbol of unity and support.
+
+The user is asking about the writers of the song "He Ain't Heavy, He's My Brother". The correct answer is Bobby Scott  
 - score: n/a (None) — 
 
 **Q2: how many seasons of the bastard executioner are there**  
 - expected: _one | one season_  
-- got: I couldn't find any information about a television series called "The Bastard Executioner". However, I did find that there was a short-lived television series called "The Bastard Executioner" which was a historical drama that aired on FX for one season, from September 15, 2015 to November 17, 2015. It was created by Kurt Sutter and starred Kurt Sutter, Flora Spencer-Longhurst, and Ed Sinclair. The series only had one season. If you are referring to a different series or show, please provide more information or context. I can try to help you answer your question then  
+- got: I don't have information on a series called "the bastard executioner." However, I can provide information on "Prison Break," "The O.C.," "The Purge: Election Year," or the Comanche, based on the context provided in your message. Please clarify if you had a different series or topic in mind.
+
+To answer your question, "Prison Break" has 5 seasons, "The O.C." has 4 seasons, and "The Purge: Election Year" is a standalone movie. The number of seasons or installments for other series or  
 - score: n/a (None) — 
 
 

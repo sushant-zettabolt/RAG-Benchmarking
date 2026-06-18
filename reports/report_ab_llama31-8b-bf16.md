@@ -10,20 +10,20 @@ _Comparison: **baseline** vs **zendnn** — same pipeline, model and queries; on
 
 | Stage | baseline (s) | zendnn (s) | speedup |
 |---|---|---|---|
-| Query embedding | 0.053 | 0.054 | 1.01x |
-| Retrieval + overhead | 0.225 | 0.218 | 1.03x |
-| Prompt processing (prefill) | 8.925 | 5.617 | 1.59x |
-| Generation (decode) | 4.076 | 4.090 | 1.003x |
-| LLM total (prefill+decode) | 13.001 | 9.707 | 1.34x |
-| Time to first token | 9.203 | 5.889 | 1.56x |
-| End-to-end (total) | 13.275 | 9.975 | 1.33x |
+| Query embedding | 0.053 | 0.053 | 1.002x |
+| Retrieval + overhead | 0.214 | 0.214 | 1.001x |
+| Prompt processing (prefill) | 7.247 | 5.976 | 1.21x |
+| Generation (decode) | 6.563 | 6.559 | 1.001x |
+| LLM total (prefill+decode) | 13.811 | 12.534 | 1.10x |
+| Time to first token | 7.514 | 6.243 | 1.20x |
+| End-to-end (total) | 14.074 | 12.797 | 1.10x |
 
 ### Inference throughput (tokens/sec, mean)
 
 | Metric | baseline | zendnn | speedup |
 |---|---|---|---|
-| Prefill (prompt) t/s | 381.5 | 607.5 | 1.59x |
-| Decode (generation) t/s | 31.4 | 31.3 | 1.00x |
+| Prefill (prompt) t/s | 470.0 | 570.7 | 1.21x |
+| Decode (generation) t/s | 19.5 | 19.5 | 1.00x |
 
 ### Sanity — should be ~equal across jobs (else contamination/contention)
 
@@ -31,17 +31,17 @@ _Comparison: **baseline** vs **zendnn** — same pipeline, model and queries; on
 |---|---|---|
 | Prompt tokens (mean) | 3396.2 | 3396.2 |
 | Completion tokens (mean) | 128 | 128 |
-| Query embedding (s) | 0.053 | 0.054 |
-| Retrieval + overhead (s) | 0.225 | 0.218 |
+| Query embedding (s) | 0.053 | 0.053 |
+| Retrieval + overhead (s) | 0.214 | 0.214 |
 | Match rate (LLM judge) | 0% | 0% |
-| Contains reference (lexical) | 54.0% | 60.0% |
+| Contains reference (lexical) | 52.0% | 57.0% |
 
 ### Speedup summary
 
-- Prefill throughput: **1.59x**  (381.5 → 607.5 t/s)
-- Decode throughput:  **1.00x**  (31.4 → 31.3 t/s)
-- LLM inference latency: **1.34x**
-- End-to-end latency: **1.33x**  (13.27s → 9.98s)
+- Prefill throughput: **1.21x**  (470.0 → 570.7 t/s)
+- Decode throughput:  **1.00x**  (19.5 → 19.5 t/s)
+- LLM inference latency: **1.10x**
+- End-to-end latency: **1.10x**  (14.07s → 12.80s)
 
 _ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as expected._
 
@@ -56,7 +56,7 @@ _ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as ex
 | Errored | 0 |
 | **Matched (LLM judge)** | **0 (0%)** |
 | Mean judge score | n/a |
-| Contains reference (lexical) | 54 (54.0%) |
+| Contains reference (lexical) | 52 (52.0%) |
 | Verdicts | none=100 |
 | Documents ingested | 100/100 |
 | Answerable questions (corpus) | 55 |
@@ -67,13 +67,13 @@ _ZenDNN accelerates matmul-bound prefill more than bandwidth-bound decode, as ex
 
 | Stage | mean (s) | p50 (s) | p95 (s) | min | max |
 |---|---|---|---|---|---|
-| End-to-end (total) | 13.275 | 13.210 | 14.988 | 11.338 | 15.308 |
-| Time to first token | 9.203 | 9.125 | 10.893 | 7.327 | 11.182 |
-| Query embedding | 0.053 | 0.053 | 0.055 | 0.050 | 0.058 |
-| Retrieval + overhead | 0.225 | 0.223 | 0.261 | 0.185 | 0.288 |
-| Prompt processing (prefill) | 8.925 | 8.839 | 10.611 | 7.062 | 10.895 |
-| Generation (decode) | 4.076 | 4.078 | 4.129 | 4.014 | 4.162 |
-| LLM total (prefill+decode) | 13.001 | 12.928 | 14.712 | 11.076 | 15.028 |
+| End-to-end (total) | 14.074 | 14.009 | 15.543 | 12.468 | 15.770 |
+| Time to first token | 7.514 | 7.463 | 8.952 | 5.968 | 9.163 |
+| Query embedding | 0.053 | 0.053 | 0.055 | 0.050 | 0.055 |
+| Retrieval + overhead | 0.214 | 0.214 | 0.238 | 0.178 | 0.271 |
+| Prompt processing (prefill) | 7.247 | 7.178 | 8.679 | 5.708 | 8.867 |
+| Generation (decode) | 6.563 | 6.562 | 6.612 | 6.490 | 6.633 |
+| LLM total (prefill+decode) | 13.811 | 13.730 | 15.275 | 12.211 | 15.480 |
 
 ### Token usage (successful queries)
 
@@ -130,25 +130,21 @@ _No correct examples._
 
 **Q0: when was the last time anyone was on the moon**  
 - expected: _14 December 1972 UTC | December 1972_  
-- got: The last time humans were on the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt, and they landed on the moon's surface on December 11, 1972. Eugene Cernan was the last person to walk on the moon, and he left the lunar surface on December 14, 1972. Since then, there have been no manned missions to the moon. 
+- got: The last time humans were on the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt. Eugene Cernan and Harrison Schmitt spent three days on the lunar surface, while Ronald Evans remained in orbit around the moon. The mission concluded on December 19, 1972, when the astronauts returned to Earth. 
 
-However, in recent years, there have been several unmanned missions to the moon, including the Chinese spacecraft Chang'e 4, which landed  
+Since then, there have been several unmanned missions to the moon, but no human has visited the moon. However, NASA is currently planning to return humans to the moon by 2025 as part of the  
 - score: n/a (None) — 
 
 **Q1: who wrote he ain't heavy he's my brother lyrics**  
 - expected: _Bobby Scott | Bob Russell_  
-- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. However, it was made famous by the 1969 version performed by The Hollies, and later by the 1970 version performed by Neil Sedaka, but the most well-known version is by The Hollies. The song's lyrics were inspired by a phrase from a 1965 song called "He Ain't Heavy" by Kelly Gordon and Bobby Scott, and later Bob Russell added the final line. 
-
-The song is most famously associated with the phrase "He ain't heavy, he's my brother," which was originally  
+- got: The phrase "He ain't heavy, he's my brother" is a famous saying that was popularized by a song of the same name. The song was written by Bobby Scott and Bob Russell, and it was first recorded by Kelly Gordon in 1969. However, it was the 1970 version by Neil Sedaka that became a hit single and made the phrase a well-known catchphrase. The song's lyrics were written by Bobby Scott and Bob Russell, and they are based on a phrase that was coined by a social worker, John E. McCarthy, in the 1950s. McCarthy used the phrase as a way  
 - score: n/a (None) — 
 
 **Q2: how many seasons of the bastard executioner are there**  
 - expected: _one | one season_  
-- got: I couldn't find any information about a television series called "The Bastard Executioner". If you could provide more context or information about the show, I may be able to help you better. 
+- got: I couldn't find any information about a TV show called "The Bastard Executioner". However, there was a TV series called "The Bastard Executioner" that aired on FX in 2015. It was a historical drama series created by Kurt Sutter, and it only had one season, which consisted of 10 episodes. It premiered on September 15, 2015, and the final episode aired on November 17, 2015. The show was canceled after one season. If you have any further questions, please let me know! 
 
-However, I did find information about a television series called "The Bastard Executioner", which was a short-lived television series that aired on FX from September 15, 2015 to November 17, 2015. The show was cancelled after one season. It starred Kurt Sutter and was a historical drama series. The season had 10 episodes. 
-
-If you are looking for information about a different show, please let me  
+However, if you are asking about The Bastard Executioner a movie  
 - score: n/a (None) — 
 
 
@@ -163,7 +159,7 @@ If you are looking for information about a different show, please let me
 | Errored | 0 |
 | **Matched (LLM judge)** | **0 (0%)** |
 | Mean judge score | n/a |
-| Contains reference (lexical) | 60 (60.0%) |
+| Contains reference (lexical) | 57 (57.0%) |
 | Verdicts | none=100 |
 | Documents ingested | 100/100 |
 | Answerable questions (corpus) | 55 |
@@ -174,13 +170,13 @@ If you are looking for information about a different show, please let me
 
 | Stage | mean (s) | p50 (s) | p95 (s) | min | max |
 |---|---|---|---|---|---|
-| End-to-end (total) | 9.975 | 9.922 | 11.232 | 8.671 | 11.356 |
-| Time to first token | 5.889 | 5.827 | 7.114 | 4.616 | 7.233 |
-| Query embedding | 0.054 | 0.054 | 0.056 | 0.050 | 0.057 |
-| Retrieval + overhead | 0.218 | 0.217 | 0.242 | 0.184 | 0.274 |
-| Prompt processing (prefill) | 5.617 | 5.563 | 6.825 | 4.360 | 6.945 |
-| Generation (decode) | 4.090 | 4.089 | 4.137 | 4.024 | 4.151 |
-| LLM total (prefill+decode) | 9.707 | 9.649 | 10.953 | 8.418 | 11.074 |
+| End-to-end (total) | 12.797 | 12.753 | 14.121 | 11.395 | 14.245 |
+| Time to first token | 6.243 | 6.188 | 7.519 | 4.894 | 7.659 |
+| Query embedding | 0.053 | 0.053 | 0.055 | 0.046 | 0.056 |
+| Retrieval + overhead | 0.214 | 0.212 | 0.241 | 0.179 | 0.265 |
+| Prompt processing (prefill) | 5.976 | 5.904 | 7.239 | 4.637 | 7.376 |
+| Generation (decode) | 6.559 | 6.558 | 6.604 | 6.492 | 6.630 |
+| LLM total (prefill+decode) | 12.534 | 12.473 | 13.841 | 11.141 | 13.954 |
 
 ### Token usage (successful queries)
 
@@ -237,17 +233,21 @@ _No correct examples._
 
 **Q0: when was the last time anyone was on the moon**  
 - expected: _14 December 1972 UTC | December 1972_  
-- got: I do not have any information about anyone being on the moon in the provided context. The provided information focuses on various topics including Chinese New Year, Wake Island, and Walter Frederick Morrison.  If you're looking for information about the last time humans visited the moon, I can tell you that the last time humans visited the moon was during the Apollo 17 mission in December 1972. The mission was crewed by astronauts Eugene Cernan, Ronald Evans, and Harrison Schmitt. Cernan and Schmitt spent three days on the lunar surface, conducting scientific experiments and collecting samples. They returned to Earth on December 19,  
+- got: I don't see any information in the given context about anyone being on the moon recently. However, according to NASA, the last time humans visited the moon was during the Apollo 17 mission in December 1972. Since then, there have been several unmanned spacecraft that have visited the moon, but no human has returned to the lunar surface. 
+
+If you're looking for more up-to-date information, I'd be happy to help you find it. Alternatively, I can provide you with information on the Apollo 17 mission or other NASA-related topics if you're interested. 
+
+Contexts provided don't seem to contain any information about space  
 - score: n/a (None) — 
 
 **Q1: who wrote he ain't heavy he's my brother lyrics**  
 - expected: _Bobby Scott | Bob Russell_  
-- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. However, the song was originally titled "He Ain't Heavy" and was written in 1962 by Bobby Scott, with the music and original lyrics written by Scott, and the original title and lyrics written by Bob Russell. The song was later recorded by the Welsh singer Kenny Lynch in 1963. The song became a worldwide hit in 1969 when it was recorded by the American singer-songwriter and musician Neil Diamond. The most well-known version of the song was recorded by The Hollies in 1969, with  
+- got: The song "He Ain't Heavy, He's My Brother" was written by Bobby Scott and Bob Russell. However, the song's original title was "Jimmy Mack" and was written by Scott. Russell then rewrote the lyrics as "He Ain't Heavy, He's My Brother," and it was recorded by the Hollies in 1969, becoming a hit single. The song was later adopted as the anthem for the Boys Town organization in the United States, a home for troubled youth. It has since become a popular song around the world, known for its uplifting message and memorable chorus. The song's most famous line, "  
 - score: n/a (None) — 
 
 **Q2: how many seasons of the bastard executioner are there**  
 - expected: _one | one season_  
-- got: I couldn't find any information about a television series called "The Bastard Executioner". However, I did find that there was a short-lived television series called "The Bastard Executioner" which was a historical drama that aired on FX for one season, from September 15, 2015 to November 17, 2015. It was created by Kurt Sutter and starred Kurt Sutter, Flora Spencer-Longhurst, and Ed Sinclair. The series only had one season. If you are referring to a different series or show, please provide more information or context. I can try to help you answer your question then  
+- got: I couldn't find any information on a TV show called "The Bastard Executioner." However, I did find a TV series called "The Bastard Executioner" that aired on FX from 2015 to 2015. It was a historical drama series that aired for one season, which consisted of 10 episodes. The series premiered on September 15, 2015, and the final episode aired on November 10, 2015. There is no information on subsequent seasons being produced. If this is the series you are referring to, then the answer is 1 season. If you are referring to a different series  
 - score: n/a (None) — 
 
 
