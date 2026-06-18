@@ -80,6 +80,22 @@ wait_for "llama-chat"  "http://localhost:${CHAT_PORT}/health"  240
 wait_for "llama-embed" "http://localhost:${EMBED_PORT}/health" 120
 wait_for "litellm"     "http://localhost:${LITELLM_PORT}/health/readiness" 60
 wait_for "anythingllm" "http://localhost:${ALLM_PORT}/api/ping" 60
+
+# Self-heal: sync ALLM_KEY from the DB in case it drifted (e.g. after a volume
+# wipe + re-setup). docker restart in allm_set_model also triggers key drift.
+db_key=$(docker exec nqrag-anythingllm python3 -c "
+import sqlite3
+conn = sqlite3.connect('/app/server/storage/anythingllm.db')
+row = conn.execute('SELECT secret FROM api_keys LIMIT 1').fetchone()
+print(row[0] if row else '')
+conn.close()
+" 2>/dev/null || true)
+if [ -n "$db_key" ] && [ "$db_key" != "$ALLM_KEY" ]; then
+    log "ALLM_KEY drift detected — syncing .env and reloading ($ALLM_KEY → $db_key)"
+    sed -i "s|^ALLM_KEY=.*|ALLM_KEY=${db_key}|" .env
+    ALLM_KEY="$db_key"
+fi
+
 log "all services healthy — embed server stays up for the entire run"
 
 # ── fixed-decode mode ────────────────────────────────────────────────────────
