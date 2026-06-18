@@ -207,16 +207,14 @@ verify_cache_disabled() {  # job
 run_job() {  # job bindir libdir algo
     local job="$1" bindir="$2" libdir="$3" algo="$4"
     log "════ job '$job': swapping chat backend (bindir=$bindir algo=${algo:-unset}) ════"
-    # Recreate both llama-chat and llama-embed with the job's binary —
-    # baseline binary for baseline job, zendnn binary for zendnn job.
+    # Only swap llama-chat. Embed stays on the baseline binary for both jobs —
+    # the ZenDNN build does not support the /v1/embeddings endpoint (returns 501).
     CHAT_BINDIR="$bindir" CHAT_LIBDIR="${libdir:-$bindir}" \
-        EMBED_BINDIR="$bindir" EMBED_LIBDIR="${libdir:-$bindir}" \
+        EMBED_BINDIR="$AB_BASELINE_BINDIR" EMBED_LIBDIR="$AB_BASELINE_BINDIR" \
         ZENDNNL_MATMUL_ALGO="$algo" AB_JOB="$job" \
-        $DC_AB up -d --force-recreate --no-deps llama-chat llama-embed >/dev/null 2>&1
+        $DC_AB up -d --force-recreate --no-deps llama-chat >/dev/null 2>&1
     wait_for "chat ($job)" "http://localhost:${CHAT_PORT}/health" 120 \
         || { $DC_AB logs --tail 40 llama-chat; die "chat server ($job) did not come up"; }
-    wait_for "embed ($job)" "http://localhost:${EMBED_PORT}/health" 120 \
-        || { $DC_AB logs --tail 40 llama-embed; die "embed server ($job) did not come up"; }
     docker logs nqrag-llama-chat 2>&1 | grep -iE 'zendnn|backend' | head -3 || true
     warmup_chat "$job"
     verify_cache_disabled "$job"
