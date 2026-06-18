@@ -2,8 +2,11 @@
 
 A fully containerized, reproducible RAG evaluation pipeline. Everything runs in
 Docker — including the LLM and embedding servers — so the only host requirement
-is **Docker + Docker Compose**. One `docker compose up` starts the stack; three
-commands ingest Google Natural Questions, evaluate, and produce a report.
+is **Docker + Docker Compose**. The llama.cpp servers are **built from public
+source on first `up`** (clone latest master, compile `-march=native`); nothing is
+pulled from a registry and no binaries are shipped. One `docker compose up`
+builds + starts the stack and auto-configures AnythingLLM; three commands ingest
+Google Natural Questions, evaluate, and produce a report.
 
 ```
         ┌─────────────┐   embed   ┌──────────────┐
@@ -25,22 +28,31 @@ commands ingest Google Natural Questions, evaluate, and produce a report.
 ## Prerequisites
 
 - Docker Engine + Docker Compose v2 (`docker compose version`)
+- A C++ toolchain is **not** needed on the host — llama.cpp is compiled inside the
+  build container.
 - ~6 GB disk for images, plus your own model GGUFs
 - Your own chat + embedding GGUF files (models are **not** downloaded — you mount them)
-- Internet access on first run (pulls images and the NQ dataset).
-  For air-gapped machines see **Shipping images via git-lfs** below.
+- Internet access on first run (clones llama.cpp, pulls the support images, and
+  downloads the NQ dataset). For air-gapped machines see **Shipping images via
+  git-lfs** below.
 
 ## Quick start
 
 ```bash
 cp .env.example .env        # then set MODELS_DIR + CHAT_MODEL_PATH/EMBED_MODEL_PATH
-./setup.sh                  # start stack + seed AnythingLLM
+docker compose up -d        # FIRST run: compiles llama.cpp from source (minutes),
+                            # pulls support images, seeds AnythingLLM automatically
 make ingest                 # download Google NQ + ingest 100 documents
 make evaluate               # run queries against AnythingLLM + LLM-as-judge
 make report                 # write results/report.md + results/report.json
 ```
 
-`make all` runs ingest → evaluate → report in sequence. Outputs land in
+`docker compose up -d` (or `make up`, or the thin `./setup.sh` wrapper that also
+validates your model paths) is all you need to start — the one-shot `seed` service
+configures AnythingLLM once it's healthy, so there is no separate setup step. The
+**first** `up` clones latest-master llama.cpp and compiles it (several minutes,
+`GGML_ZENDNN=OFF` → `nqrag-llama:baseline`); subsequent `up`s reuse the cached
+image. `make all` runs ingest → evaluate → report in sequence. Outputs land in
 `./data/` (bind-mounted into the harness container):
 
 ```
@@ -57,12 +69,46 @@ data/
 
 A pre-generated example lives in [`reports/`](reports/).
 
+## Building the llama.cpp images from source
+
+The `llama-chat` / `llama-embed` servers run images compiled locally from public
+llama.cpp source (`docker/llama/Dockerfile`, multi-stage). A single `GGML_ZENDNN`
+build arg produces two images from identical source:
+
+| Image | Build arg | Backend |
+|---|---|---|
+| `nqrag-llama:baseline` | `GGML_ZENDNN=OFF` | ggml CPU only |
+| `nqrag-llama:zendnn` | `GGML_ZENDNN=ON` | ggml + ZenDNN (auto-fetches **public** ZenDNN source) |
+
+Either image can serve as chat **or** embed — only the mounted model and command
+flags differ. `docker compose up` builds `nqrag-llama:baseline` on first run (it's
+the default for both services). The A/B run additionally needs the zendnn image:
+
+```bash
+make build-llama            # build BOTH images at the SAME commit (fair A/B)
+```
+
+`make build-llama` resolves master's HEAD SHA once (`git ls-remote`) and feeds it
+to both builds via the `LLAMA_CPP_REF` arg, so baseline and zendnn are the same
+commit. Notes:
+
+- **`up` does not auto-refresh.** Once an image exists, `up` reuses the cache even
+  if master moved. To rebuild on latest, run `make build-llama` (or
+  `docker compose build --no-cache --pull llama-chat`).
+- **Pin for reproducibility.** Set `LLAMA_CPP_REF=<sha-or-tag>` in `.env` to freeze
+  the build (empty = latest master at build time).
+- **`-march=native`** — a built image is tuned to this CPU and is **not** portable
+  to a different microarchitecture (illegal-instruction faults). Each host builds
+  its own.
+
 ## Configuration (`.env`)
 
 Everything is configurable through `.env` — nothing is hardcoded.
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `LLAMA_CPP_REPO` | `github.com/ggml-org/llama.cpp` | Public llama.cpp source cloned at build time |
+| `LLAMA_CPP_REF` | _empty_ | Pin to a commit/tag for a frozen build (empty = latest master) |
 | `MODELS_DIR` | `./models` | **Required.** Host dir holding your GGUFs, mounted read-only at `/models` |
 | `CHAT_MODEL_PATH` | `/models/Llama-3.2-1B-Instruct-BF16.gguf` | **Required.** In-container path to the chat GGUF (under `/models`) |
 | `EMBED_MODEL_PATH` | `/models/nomic-embed-text-v1.5.f16.gguf` | **Required.** In-container path to the embedding GGUF (under `/models`) |
@@ -98,9 +144,10 @@ if either variable is unset or the referenced file isn't found in the mount.
 
 ### GPU
 
-The default image is CPU-only. For NVIDIA GPUs set
-`LLAMA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda`, set `CHAT_NGL`/`EMBED_NGL`
-> 0, and add a `deploy.resources.reservations.devices` GPU reservation to the
+The image is CPU-only (the Dockerfile builds with `GGML_NATIVE=ON` for the host
+CPU). For NVIDIA GPUs you'd add a CUDA toolchain + `-DGGML_CUDA=ON` to
+`docker/llama/Dockerfile`, set `CHAT_NGL`/`EMBED_NGL` > 0, and add a
+`deploy.resources.reservations.devices` GPU reservation to the
 `llama-chat`/`llama-embed` services (requires nvidia-container-toolkit).
 
 ### NUMA / CPU pinning
@@ -174,34 +221,41 @@ LiteLLM + Prometheus also expose aggregate token-usage and TTFT metrics at
 
 ## ZenDNN A/B benchmark (optional)
 
-Compare a **baseline** vs a **ZenDNN** llama.cpp chat backend on the *same* RAG
+Compare a **baseline** vs a **ZenDNN** llama.cpp backend on the *same* RAG
 pipeline (identical model, documents, and queries) and get a baseline-vs-zendnn
 report with per-stage latency, inference throughput (prefill/decode t/s), and
 speedup ratios.
 
 ```bash
-./setup.sh && make ingest      # stack up + documents ingested
-make ab                        # baseline job, then zendnn job, then report_ab
+docker compose up -d && make ingest   # stack up + documents ingested
+make ab                                # builds zendnn image if missing, then
+                                       # baseline job → zendnn job → report_ab
 ```
 
-`run_ab.sh` swaps only the `llama-chat` backend between jobs and runs them
-**strictly sequentially** — one chat server at a time — so they never compete
-for CPU and the numbers stay clean. It writes `data/results/report_ab.{md,json}`.
+`run_ab.sh` swaps **both** the `llama-chat` and `llama-embed` backends together
+per job (by overriding their images) — so the report compares the whole inference
+path under each backend (query embedded **and** answer generated by the same
+backend). Jobs run **strictly sequentially** — one backend at a time — so they
+never compete for CPU and the numbers stay clean. It builds both images via
+`make build-llama` if they don't exist, then writes
+`data/results/report_ab.{md,json}`.
 
 How the two backends are provided (configurable in `.env`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AB_BASELINE_BINDIR` | `./llama.cpp/build/bin` | Host dir with a baseline `llama-server` (no ZenDNN) |
-| `AB_ZENDNN_BINDIR` | `./llama.cpp/build_zendnn/bin` | Host dir with a ZenDNN-enabled `llama-server` |
-| `AB_ZENDNN_LIBDIR` | _(ZenDNN install lib)_ | Dir with `libzendnnl.so`, added to `LD_LIBRARY_PATH` for the zendnn job |
+| `LLAMA_BASELINE_IMAGE` | `nqrag-llama:baseline` | Image used for the baseline job (built `GGML_ZENDNN=OFF`) |
+| `LLAMA_ZENDNN_IMAGE` | `nqrag-llama:zendnn` | Image used for the zendnn job (built `GGML_ZENDNN=ON`) |
 | `AB_ZENDNN_ALGO` | `1` | `ZENDNNL_MATMUL_ALGO` value for the zendnn job |
+| `AB_FIXED_DECODE` | _empty_ | Force exactly N decode tokens/query on both backends for a clean prefill+decode comparison (quality judging auto-skipped) |
 
-Each job mounts its build tree into the runtime image
-(`docker-compose.ab.yml`) and runs that binary — so baseline and zendnn differ
-only in the llama.cpp backend. `CHAT_MODEL_PATH` must point at a local GGUF (the
-A/B uses your real model, since ZenDNN targets matmul-bound prefill). A sample
-A/B report is in [`reports/`](reports/).
+Both jobs apply the same three runtime flags (`ZENDNNL_MATMUL_ALGO`,
+`OMP_PROC_BIND=close`, `OMP_PLACES=cores`); `ZENDNNL_MATMUL_ALGO` is the only
+thing that differs (unset for baseline). The images are built from the same
+commit by `make build-llama`, so baseline and zendnn differ only in the ZenDNN
+backend. `CHAT_MODEL_PATH` must point at a local GGUF (the A/B uses your real
+model, since ZenDNN targets matmul-bound prefill). A sample A/B report is in
+[`reports/`](reports/).
 
 ## Dataset notes
 
@@ -210,6 +264,22 @@ A/B report is in [`reports/`](reports/).
 - To keep retrieval meaningful, ingestion prefers passages that actually contain
   a reference answer (`CORPUS_SCAN`), then tops up to `DOC_N`. The number of
   answerable questions is recorded in `ingest_metadata.json` and the report.
+- **Full corpus:** set `DOC_N=0` **and** `CORPUS_SCAN=0` to ingest the *entire*
+  `BeIR/nq` corpus (~2.68M passages) for a realistic, non-toy retrieval test.
+  This is made feasible by **bulk ingest** (`BULK_INGEST=1`, the default): the
+  harness embeds chunks itself against `llama-embed` in parallel batches and
+  writes the vectors **straight into AnythingLLM's LanceDB table**, skipping the
+  legacy one-file-+-one-HTTP-POST-per-document path. Ingest time is then bounded
+  by the embedder's throughput, not by per-document HTTP overhead. Tune
+  `EMBED_REQ_BATCH` / `EMBED_CONCURRENCY`; set `BULK_INGEST=0` for the legacy path.
+- **Ingest vs retrieve embed tuning.** `make ingest` (via `run_ingest.sh`)
+  temporarily reconfigures `llama-embed` for max throughput — **whole box +
+  `EMBED_INGEST_PARALLEL` server slots** (ctx auto-scales by slot count) — then
+  **restores the bounded, single-slot retrieve config** (`EMBED_CPUSET`, no
+  `--parallel`). Retrieval embeds one query at a time, so it stays pinned and
+  single-slot and never steals cores from `llama-chat` during the A/B. These
+  knobs (`EMBED_INGEST_CPUSET/THREADS/PARALLEL/BATCH`) affect ingest speed only —
+  not the benchmark numbers.
 - Both datasets are configurable via `EVAL_DATASET` / `CORPUS_DATASET`.
 
 ## Shipping images via git-lfs (air-gapped install)
@@ -231,18 +301,24 @@ make load-images            # docker load all tarballs
 ## Lifecycle
 
 ```bash
-make up        # start serving containers
-make ps        # status
-make logs      # follow logs
-make down      # stop containers (keeps volumes)
-make clean     # remove generated data/results
-make clean-all # also drop volumes (models cache, vector DB)
+make up           # build (first run) + start the full stack; seed auto-configures
+make build-llama  # (re)build BOTH llama.cpp images from source at the same commit
+make ps           # status
+make logs         # follow logs
+make down         # stop containers (keeps volumes)
+make clean        # remove generated data/results
+make clean-all    # also drop volumes (models cache, vector DB)
 ```
 
 ## Troubleshooting
 
-- **`make ingest` says ALLM_KEY is empty** — run `./setup.sh` first; it generates
-  the key and writes it to `.env`.
+- **`make ingest` says ALLM_KEY is empty** — `ALLM_KEY` has a default in
+  `.env.example` and the one-shot `seed` service writes it into AnythingLLM on
+  `up`. If you blanked it, set it in `.env` and re-run `docker compose up -d` (the
+  `seed` service re-applies it). Change it from the default for any non-local use.
+- **First `up` is slow / want to watch the build** — the first `up` compiles
+  llama.cpp from source (minutes). Run `docker compose build llama-chat` (or
+  `make build-llama`) to see the build output directly.
 - **llama-chat exits immediately / "CHAT_MODEL_PATH is not set" or "model not
   found"** — set `MODELS_DIR` to the host folder with your GGUFs and
   `CHAT_MODEL_PATH` / `EMBED_MODEL_PATH` to their paths under `/models`. Watch

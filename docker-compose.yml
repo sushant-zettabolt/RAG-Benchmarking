@@ -8,7 +8,17 @@ services:
   # Models are NOT downloaded — supply your own GGUF via MODELS_DIR (mounted at
   # /models) and point CHAT_MODEL_PATH at it.
   llama-chat:
-    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    # Built from public source on first `up` (clones latest llama.cpp; ZenDNN OFF
+    # for the baseline image). The same cached image serves chat OR embed — only
+    # the mounted model + command flags differ. run_ab.sh overrides CHAT_IMAGE to
+    # swap in nqrag-llama:zendnn per job. See docker/llama/Dockerfile.
+    build:
+      context: ./docker/llama
+      args:
+        GGML_ZENDNN: "OFF"
+        LLAMA_CPP_REPO: ${LLAMA_CPP_REPO:-https://github.com/ggml-org/llama.cpp}
+        LLAMA_CPP_REF: ${LLAMA_CPP_REF:-}
+    image: ${CHAT_IMAGE:-nqrag-llama:baseline}
     container_name: nqrag-llama-chat
     # CPU pinning (empty = no pin). On a multi-socket box pin to ONE NUMA node's
     # cores and set CHAT_MEMBIND to that node so memory is local too.
@@ -46,8 +56,7 @@ services:
         if [ -n "$$CHAT_MEMBIND" ]; then NA="$$NA --membind=$$CHAT_MEMBIND"; fi
         NUMA=""
         if [ -n "$$NA" ]; then
-          if ! command -v numactl >/dev/null 2>&1; then echo "[llama-chat] installing numactl ..."; apt-get update -qq && apt-get install -y -qq numactl || { echo "ERROR: failed to install numactl" >&2; exit 1; }; fi
-          NUMA="numactl$$NA"
+          NUMA="numactl$$NA"   # numactl is baked into the image
           echo "[llama-chat] NUMA bind:$$NA"
         fi
         echo "[llama-chat] $$NUMA /app/llama-server $$ARGS"
@@ -66,7 +75,10 @@ services:
 
   # ── Embedding server ───────────────────────────────────────────────────────
   llama-embed:
-    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    # Reuses the image llama-chat builds (no second compile). Defaults to the
+    # baseline image; run_ab.sh overrides EMBED_IMAGE to nqrag-llama:zendnn so the
+    # A/B swaps the embed backend in lockstep with chat.
+    image: ${EMBED_IMAGE:-nqrag-llama:baseline}
     container_name: nqrag-llama-embed
     cpuset: ${EMBED_CPUSET:-}
     cap_add:
@@ -81,12 +93,31 @@ services:
       EMBED_MEMBIND: ${EMBED_MEMBIND:-}
       EMBED_PHYSCPUBIND: ${EMBED_CPUSET:-}
       EMBED_EXTRA_FLAGS: ${EMBED_EXTRA_FLAGS:-}
+      # Server slots. Empty/1 = single slot (retrieve: one query at a time). >1 is
+      # used only for the one-time bulk ingest (run_ingest.sh) to embed many chunks
+      # concurrently; ctx-size is scaled by the slot count (each slot keeps EMBED_CTX).
+      EMBED_PARALLEL: ${EMBED_PARALLEL:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
         if [ -z "$$EMBED_MODEL_PATH" ]; then echo "ERROR: EMBED_MODEL_PATH is not set. Put your embedding GGUF under MODELS_DIR and set EMBED_MODEL_PATH to its path under /models (e.g. /models/embed.gguf)." >&2; exit 1; fi
         if [ ! -f "$$EMBED_MODEL_PATH" ]; then echo "ERROR: embedding model not found at $$EMBED_MODEL_PATH. Check MODELS_DIR mount and EMBED_MODEL_PATH." >&2; exit 1; fi
-        ARGS="--host 0.0.0.0 --port 8080 --embedding --ctx-size $$EMBED_CTX --batch-size $$EMBED_BATCH --ubatch-size $$EMBED_UBATCH --n-gpu-layers $$EMBED_NGL --metrics --alias embed-model --model $$EMBED_MODEL_PATH"
+        # OpenMP thread affinity — same as llama-chat. The A/B swaps the embed
+        # backend too, so both backends get OMP_PROC_BIND=close + OMP_PLACES=cores
+        # in all cases (the only ZenDNN knob added in the zendnn job is the env
+        # var ZENDNNL_MATMUL_ALGO, set by the A/B overlay).
+        export OMP_PROC_BIND=close
+        export OMP_PLACES=cores
+        # Slots: empty/1 = single slot (retrieve). >1 (bulk ingest) needs ctx scaled
+        # by slot count so each slot still gets a full EMBED_CTX window.
+        CTX=$$EMBED_CTX
+        PAR=""
+        if [ -n "$$EMBED_PARALLEL" ] && [ "$$EMBED_PARALLEL" -gt 1 ] 2>/dev/null; then
+          CTX=$$((EMBED_CTX * EMBED_PARALLEL))
+          PAR="--parallel $$EMBED_PARALLEL"
+          echo "[llama-embed] ingest mode: $$EMBED_PARALLEL slots, ctx-size=$$CTX"
+        fi
+        ARGS="--host 0.0.0.0 --port 8080 --embedding --ctx-size $$CTX --batch-size $$EMBED_BATCH --ubatch-size $$EMBED_UBATCH --n-gpu-layers $$EMBED_NGL --metrics --alias embed-model --model $$EMBED_MODEL_PATH $$PAR"
         if [ -n "$$EMBED_THREADS" ]; then ARGS="$$ARGS --threads $$EMBED_THREADS"; fi
         ARGS="$$ARGS $$EMBED_EXTRA_FLAGS"
         NA=""
@@ -94,8 +125,7 @@ services:
         if [ -n "$$EMBED_MEMBIND" ]; then NA="$$NA --membind=$$EMBED_MEMBIND"; fi
         NUMA=""
         if [ -n "$$NA" ]; then
-          if ! command -v numactl >/dev/null 2>&1; then echo "[llama-embed] installing numactl ..."; apt-get update -qq && apt-get install -y -qq numactl || { echo "ERROR: failed to install numactl" >&2; exit 1; }; fi
-          NUMA="numactl$$NA"
+          NUMA="numactl$$NA"   # numactl is baked into the image
           echo "[llama-embed] NUMA bind:$$NA"
         fi
         echo "[llama-embed] $$NUMA /app/llama-server $$ARGS"
@@ -210,7 +240,10 @@ services:
       EMBEDDING_BASE_PATH: http://litellm:4000/v1
       GENERIC_OPEN_AI_EMBEDDING_API_KEY: ${LITELLM_MASTER_KEY:-sk-bench-master}
       EMBEDDING_MODEL_PREF: embed-model
-      EMBEDDING_MODEL_MAX_CHUNK_LENGTH: ${EMBED_CTX:-2048}
+      # Binding CHARACTER cap on chunk size (AnythingLLM clamps chunks to this).
+      # Decoupled from EMBED_CTX, which is a TOKEN context — tying them silently
+      # capped chunks at ~340 words. 8192 chars ~= EMBED_CTX(2048 tok) x 4.
+      EMBEDDING_MODEL_MAX_CHUNK_LENGTH: ${EMBED_MAX_CHUNK_CHARS:-8192}
     volumes:
       - anythingllm-storage:/app/server/storage
     ports:
@@ -222,6 +255,32 @@ services:
       retries: 30
       start_period: 20s
     restart: unless-stopped
+
+  # ── Self-seeding init (configures AnythingLLM on `up`) ───────────────────────
+  # One-shot: waits for anythingllm to be healthy (DB + tables created by then),
+  # writes the API key + provider/chunk settings into its SQLite DB, then exits.
+  # Makes a bare `docker compose up` fully self-configure — no setup.sh needed.
+  # Reuses the harness image (has python3 + stdlib sqlite3). Mounts the SAME named
+  # volume anythingllm uses, and seeds the DB at ALLM_DB.
+  seed:
+    image: nqrag-harness:local
+    build: ./harness
+    container_name: nqrag-seed
+    depends_on:
+      anythingllm: {condition: service_healthy}
+    environment:
+      ALLM_DB: /allm-storage/anythingllm.db
+      ALLM_KEY: ${ALLM_KEY:-nqrag-local-dev-key}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-bench-master}
+      CHAT_CTX: ${CHAT_CTX:-8192}
+      EMBED_CHUNK_WORDS: ${EMBED_CHUNK_WORDS:-512}
+      EMBED_CHUNK_OVERLAP_WORDS: ${EMBED_CHUNK_OVERLAP_WORDS:-100}
+      EMBED_MAX_CHUNK_CHARS: ${EMBED_MAX_CHUNK_CHARS:-8192}
+    volumes:
+      - anythingllm-storage:/allm-storage
+      - ./scripts:/scripts:ro
+    restart: "no"
+    command: ["python3", "/scripts/seed_anythingllm.py"]
 
   # ── Harness toolbox (ingest / evaluate / report) — run on demand ─────────────
   # Not started by `docker compose up` (profile gated). Invoke with:
@@ -253,12 +312,30 @@ services:
       JUDGE_API_KEY: ${JUDGE_API_KEY:-}
       WARMUP: ${WARMUP:-1}
       EVAL_LIMIT: ${EVAL_LIMIT:-}
+      RETRIEVAL_TOPN: ${RETRIEVAL_TOPN:-5}
+      RETRIEVAL_SIM_THRESHOLD: ${RETRIEVAL_SIM_THRESHOLD:-0.0}
       DATA_DIR: /data
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HOME: /data/hf-cache
+      # ── bulk ingest (write vectors straight into AnythingLLM's LanceDB) ───────
+      # BULK_INGEST=1 bypasses the per-doc HTTP upload path: the harness embeds
+      # chunks against llama-embed and writes rows directly into the workspace's
+      # LanceDB table (mounted via anythingllm-storage). 0 = legacy HTTP API path.
+      BULK_INGEST: ${BULK_INGEST:-1}
+      ALLM_STORAGE: /allm-storage
+      EMBED_URL: ${EMBED_URL:-http://llama-embed:8080/v1}
+      EMBED_MODEL_NAME: ${EMBED_MODEL_NAME:-embed-model}
+      EMBED_REQ_BATCH: ${EMBED_REQ_BATCH:-64}
+      EMBED_CONCURRENCY: ${EMBED_CONCURRENCY:-8}
+      EMBED_CHUNK_WORDS: ${EMBED_CHUNK_WORDS:-512}
+      EMBED_CHUNK_OVERLAP_WORDS: ${EMBED_CHUNK_OVERLAP_WORDS:-100}
+      EMBED_MAX_CHUNK_CHARS: ${EMBED_MAX_CHUNK_CHARS:-8192}
     volumes:
       - ./src:/app:ro
       - ./data:/data
+      # Write access to AnythingLLM's storage so bulk ingest can create the
+      # LanceDB table directly (table name = workspace slug).
+      - anythingllm-storage:/allm-storage
     working_dir: /app
 
 volumes:

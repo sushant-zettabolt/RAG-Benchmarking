@@ -40,6 +40,9 @@ CORPUS_SCAN    = C.envi("CORPUS_SCAN", 20000)
 # a heavier, more representative prefill workload for the ZenDNN A/B.
 RETRIEVAL_TOPN = C.envi("RETRIEVAL_TOPN", 20)
 RETRIEVAL_SIM_THRESHOLD = C.envf("RETRIEVAL_SIM_THRESHOLD", 0.0)
+# Bulk ingest: embed chunks ourselves + write vectors directly into AnythingLLM's
+# LanceDB (scales to the full corpus). 0 = legacy per-doc HTTP upload path.
+BULK_INGEST = os.environ.get("BULK_INGEST", "1").strip().lower() not in ("", "0", "false", "no")
 
 
 def load_eval_questions():
@@ -56,9 +59,15 @@ def load_eval_questions():
 
 
 def load_corpus_passages():
-    n = max(CORPUS_SCAN, DOC_N) if CORPUS_SCAN else DOC_N
-    print(f"[ingest] loading up to {n} passages from {CORPUS_DATASET} corpus ...")
-    ds = _load(CORPUS_DATASET, "corpus", split=f"corpus[:{n}]")
+    # DOC_N / CORPUS_SCAN == 0 (or empty) means "no cap". If both are unbounded we
+    # load the WHOLE corpus (the full BeIR/nq is ~2.68M passages); otherwise we
+    # load the larger of the two bounds.
+    bounds = [v for v in (CORPUS_SCAN, DOC_N) if v]
+    n = max(bounds) if bounds else 0           # 0 -> all
+    split = "corpus" if n == 0 else f"corpus[:{n}]"
+    print(f"[ingest] loading {'ALL' if n == 0 else f'up to {n}'} "
+          f"passages from {CORPUS_DATASET} corpus ...")
+    ds = _load(CORPUS_DATASET, "corpus", split=split)
     out = []
     for r in ds:
         out.append({"id": str(r.get("_id", len(out))),
@@ -68,13 +77,19 @@ def load_corpus_passages():
 
 
 def build_corpus(questions, passages):
-    """Choose DOC_N passages, preferring ones that contain a reference answer.
-    Marks each question answerable if a passage carrying its answer is included."""
+    """Choose up to DOC_N passages, preferring ones that contain a reference answer.
+    DOC_N == 0 means no cap — every loaded passage is ingested. Marks each question
+    answerable if a passage carrying its answer is included."""
+    # DOC_N == 0 -> ingest all loaded passages (cap = full set).
+    cap = DOC_N if DOC_N else len(passages)
     lowered = [(p["title"] + " " + p["text"]).lower() for p in passages]
     chosen_idx = []          # passage indices, in selection order
     seen = set()
 
-    if CORPUS_SCAN:
+    # Scan for answer-bearing passages whenever we have questions to match (this is
+    # what makes retrieval evaluable). CORPUS_SCAN == 0 still scans — it means
+    # "whole corpus" here, not "skip".
+    if questions:
         for q in questions:
             terms = [a.lower() for a in q["answers"] if len(a) >= 3]
             if not terms:
@@ -93,11 +108,11 @@ def build_corpus(questions, passages):
                     q["answerable"] = True
                     break
 
-    # cap answer-bearing passages at DOC_N, then top up with leading passages
-    chosen_idx = chosen_idx[:DOC_N]
+    # cap answer-bearing passages at `cap`, then top up with leading passages
+    chosen_idx = chosen_idx[:cap]
     chosen_set = set(chosen_idx)
     for pi in range(len(passages)):
-        if len(chosen_idx) >= DOC_N:
+        if len(chosen_idx) >= cap:
             break
         if pi not in chosen_set:
             chosen_idx.append(pi)
@@ -115,35 +130,48 @@ def build_corpus(questions, passages):
     for pi in chosen_idx:
         p = passages[pi]
         body = (f"# {p['title']}\n\n{p['text']}\n" if p["title"] else p["text"] + "\n")
-        docs.append((idx_to_doc[pi], body))
+        docs.append((idx_to_doc[pi], body, p["title"]))
     return docs
 
 
 def write_docs(docs):
     for old in glob.glob(os.path.join(C.DOCS_DIR, "*.txt")):
         os.remove(old)
-    for fname, body in docs:
+    for fname, body, *_ in docs:
         with open(os.path.join(C.DOCS_DIR, fname), "w") as f:
             f.write(body)
     print(f"[ingest] wrote {len(docs)} document files to {C.DOCS_DIR}")
 
 
 def get_or_create_workspace():
-    r = requests.post(f"{C.ALLM_URL}/api/v1/workspace/new",
-                      headers={**C.ALLM_HEADERS, "Content-Type": "application/json"},
-                      json={"name": C.SLUG}, timeout=60)
+    # REUSE an existing workspace with our slug first. Creating with a duplicate
+    # name makes AnythingLLM mint a NEW suffixed slug (e.g. nq-bench-70783785),
+    # which would not match SLUG (what evaluate.py queries) and would leave the
+    # vectors in an orphan table. So check before creating (idempotent re-ingest).
+    slug = None
     try:
-        slug = r.json().get("workspace", {}).get("slug")
-    except Exception:
-        slug = None
-    if not slug:
-        # already exists — look it up
         ws = requests.get(f"{C.ALLM_URL}/api/v1/workspaces",
                           headers=C.ALLM_HEADERS, timeout=60).json()
         for w in ws.get("workspaces", []):
-            if w.get("slug") == C.SLUG or w.get("name") == C.SLUG:
+            if w.get("slug") == C.SLUG:
                 slug = w["slug"]
+                print(f"[ingest] reusing existing workspace '{slug}'")
                 break
+    except Exception:
+        pass
+    if not slug:
+        r = requests.post(f"{C.ALLM_URL}/api/v1/workspace/new",
+                          headers={**C.ALLM_HEADERS, "Content-Type": "application/json"},
+                          json={"name": C.SLUG}, timeout=60)
+        try:
+            slug = r.json().get("workspace", {}).get("slug")
+        except Exception:
+            slug = None
+        if slug and slug != C.SLUG:
+            # AnythingLLM slugified/suffixed the name — warn loudly; evaluate.py
+            # queries SLUG, so a mismatch means retrieval would find nothing.
+            print(f"[ingest] WARNING: created workspace slug '{slug}' != SLUG '{C.SLUG}'. "
+                  f"Set SLUG={slug} or remove the conflicting workspace.")
     if not slug:
         raise RuntimeError(f"could not create or find workspace '{C.SLUG}'")
     # Configure retrieval so prompts carry a substantial context (bigger prefill).
@@ -163,7 +191,7 @@ def get_or_create_workspace():
 def upload_documents(docs):
     """Upload each doc; return (locations, failures)."""
     locations, failures = [], []
-    for i, (fname, _) in enumerate(docs, 1):
+    for i, (fname, *_rest) in enumerate(docs, 1):
         fp = os.path.join(C.DOCS_DIR, fname)
         try:
             r = requests.post(f"{C.ALLM_URL}/api/v1/document/upload",
@@ -206,7 +234,6 @@ def main():
     questions = load_eval_questions()
     passages  = load_corpus_passages()
     docs      = build_corpus(questions, passages)
-    write_docs(docs)
 
     with open(C.EVAL_FILE, "w") as f:
         for q in questions:
@@ -214,9 +241,8 @@ def main():
     answerable = sum(1 for q in questions if q["answerable"])
     print(f"[ingest] eval set: {len(questions)} questions, {answerable} answerable from corpus")
 
+    # Workspace must exist (slug == LanceDB table name) and carries topN/threshold.
     slug = get_or_create_workspace()
-    locations, failures = upload_documents(docs)
-    embedded = embed_documents(slug, locations)
 
     meta = {
         "timestamp": time.time(),
@@ -225,20 +251,35 @@ def main():
         "workspace_slug": slug,
         "docs_requested": DOC_N,
         "docs_written": len(docs),
-        "docs_uploaded_ok": len(locations),
-        "docs_failed": len(failures),
-        "failures": failures,
-        "embedded": embedded,
         "eval_questions": len(questions),
         "answerable_questions": answerable,
         "corpus_scanned": len(passages),
     }
+
+    if BULK_INGEST:
+        # Scalable path: embed chunks ourselves and write vectors straight into
+        # AnythingLLM's LanceDB (no per-doc files, no per-doc HTTP uploads).
+        import bulk_ingest
+        n_rows, dim = bulk_ingest.bulk_store(slug, docs)
+        meta.update({"ingest_mode": "bulk", "embedded": n_rows, "vector_dim": dim,
+                     "docs_uploaded_ok": len(docs), "docs_failed": 0, "failures": []})
+        print(f"[ingest] done (bulk). {len(docs)} docs -> {n_rows} vectors in LanceDB "
+              f"table '{slug}'. metadata -> {C.INGEST_META}")
+    else:
+        # Legacy path: write files + upload + embed one document at a time.
+        write_docs(docs)
+        locations, failures = upload_documents(docs)
+        embedded = embed_documents(slug, locations)
+        meta.update({"ingest_mode": "api", "embedded": embedded,
+                     "docs_uploaded_ok": len(locations), "docs_failed": len(failures),
+                     "failures": failures})
+        print(f"[ingest] done. {len(locations)}/{len(docs)} docs uploaded, "
+              f"{embedded} embedded. metadata -> {C.INGEST_META}")
+        if failures:
+            print(f"[ingest] {len(failures)} upload failure(s) recorded in metadata.")
+
     with open(C.INGEST_META, "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"[ingest] done. {len(locations)}/{len(docs)} docs uploaded, "
-          f"{embedded} embedded. metadata -> {C.INGEST_META}")
-    if failures:
-        print(f"[ingest] {len(failures)} upload failure(s) recorded in metadata.")
 
 
 if __name__ == "__main__":
