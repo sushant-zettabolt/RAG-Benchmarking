@@ -54,18 +54,17 @@ def speedup(a, b, lower_better=False):
 
 
 def speedup_label(sp):
-    """Render a speedup ratio with correct faster/slower wording.
+    """Render a speedup ratio. >1 means job_b is faster; <1 means job_b is slower.
 
-    The ratio is rendered as a bare multiplier (e.g. '1.12x') with no
-    faster/slower wording. A near-equal ratio that rounds to 1.00x at 2
-    decimals is widened to 3 decimals so a real difference is still visible.
+    Ratios are shown directionally: 1.73x means job_b is 1.73x faster,
+    0.68x means job_b is 0.68x (i.e. slower). Near-equal values that round
+    to 1.00x at 2 decimals are widened to 3 decimals.
     """
     if sp is None:
         return "n/a"
-    ratio = sp if sp >= 1 else 1 / sp
-    s = f"{ratio:.2f}"
+    s = f"{sp:.2f}"
     if s == "1.00":
-        s = f"{ratio:.3f}"
+        s = f"{sp:.3f}"
     return f"{s}x"
 
 
@@ -108,7 +107,10 @@ def comparison_sections(a, b, h="##"):
         ("End-to-end (total)", "total_s"),
     ]:
         sp = speedup(a[key], b[key], lower_better=True)
-        o.append(f"| {label} | {f(a[key],3)} | {f(b[key],3)} | {speedup_label(sp)} |")
+        # Embed server uses the same baseline binary for both jobs — any
+        # difference is measurement noise, not a real speedup.
+        label_sp = "n/a (same binary)" if key == "embed_s" else speedup_label(sp)
+        o.append(f"| {label} | {f(a[key],3)} | {f(b[key],3)} | {label_sp} |")
 
     o.append(f"\n{h} Inference throughput (tokens/sec, mean)\n")
     o.append(f"| Metric | {JOB_A} | {JOB_B} | speedup |")
