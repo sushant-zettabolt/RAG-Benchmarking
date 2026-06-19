@@ -47,6 +47,11 @@ DOC_TARGET_TOKENS = C.envi("DOC_TARGET_TOKENS", 4096)
 # the chunks actually get included.
 RETRIEVAL_TOPN = C.envi("RETRIEVAL_TOPN", 8)
 RETRIEVAL_SIM_THRESHOLD = C.envf("RETRIEVAL_SIM_THRESHOLD", 0.0)
+# Bulk ingest: embed chunks ourselves (fanned out across the data-parallel embed
+# instances run_ingest.sh spins up) and write vectors directly into AnythingLLM's
+# LanceDB table — bypasses the slow per-doc HTTP upload + update-embeddings path
+# so the full corpus scales. 0 = legacy per-doc HTTP upload path.
+BULK_INGEST = os.environ.get("BULK_INGEST", "1").strip().lower() not in ("", "0", "false", "no")
 
 
 def load_eval_questions():
@@ -236,7 +241,6 @@ def main():
     questions = load_eval_questions()
     passages  = load_corpus_passages()
     docs      = build_corpus(questions, passages)
-    write_docs(docs)
 
     with open(C.EVAL_FILE, "w") as f:
         for q in questions:
@@ -244,9 +248,8 @@ def main():
     answerable = sum(1 for q in questions if q["answerable"])
     print(f"[ingest] eval set: {len(questions)} questions, {answerable} answerable from corpus")
 
+    # Workspace must exist (slug == LanceDB table name) and carries topN/threshold.
     slug = get_or_create_workspace()
-    locations, failures = upload_documents(docs)
-    embedded = embed_documents(slug, locations)
 
     meta = {
         "timestamp": time.time(),
@@ -255,20 +258,38 @@ def main():
         "workspace_slug": slug,
         "docs_requested": DOC_N,
         "docs_written": len(docs),
-        "docs_uploaded_ok": len(locations),
-        "docs_failed": len(failures),
-        "failures": failures,
-        "embedded": embedded,
         "eval_questions": len(questions),
         "answerable_questions": answerable,
         "corpus_scanned": len(passages),
     }
+
+    if BULK_INGEST:
+        # Scalable path: embed chunks ourselves (across run_ingest.sh's data-parallel
+        # instances) and write vectors straight into AnythingLLM's LanceDB — no
+        # per-doc files, no per-doc HTTP uploads. build_corpus packs passages into
+        # (fname, body) docs; bulk_store re-chunks each body and stores the rows.
+        import bulk_ingest
+        docs3 = [(fname, body, "") for fname, body in docs]
+        n_rows, dim = bulk_ingest.bulk_store(slug, docs3)
+        meta.update({"ingest_mode": "bulk", "embedded": n_rows, "vector_dim": dim,
+                     "docs_uploaded_ok": len(docs), "docs_failed": 0, "failures": []})
+        print(f"[ingest] done (bulk). {len(docs)} docs -> {n_rows} vectors in LanceDB "
+              f"table '{slug}'. metadata -> {C.INGEST_META}")
+    else:
+        # Legacy path: write files + upload + embed one document at a time.
+        write_docs(docs)
+        locations, failures = upload_documents(docs)
+        embedded = embed_documents(slug, locations)
+        meta.update({"ingest_mode": "api", "embedded": embedded,
+                     "docs_uploaded_ok": len(locations), "docs_failed": len(failures),
+                     "failures": failures})
+        print(f"[ingest] done. {len(locations)}/{len(docs)} docs uploaded, "
+              f"{embedded} embedded. metadata -> {C.INGEST_META}")
+        if failures:
+            print(f"[ingest] {len(failures)} upload failure(s) recorded in metadata.")
+
     with open(C.INGEST_META, "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"[ingest] done. {len(locations)}/{len(docs)} docs uploaded, "
-          f"{embedded} embedded. metadata -> {C.INGEST_META}")
-    if failures:
-        print(f"[ingest] {len(failures)} upload failure(s) recorded in metadata.")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,6 @@
 requests==2.32.3
 datasets==3.2.0
 huggingface_hub==0.27.0
+# Pinned to match @lancedb/lancedb 0.15.0 in the AnythingLLM image so the Lance
+# table the harness writes (bulk ingest) is readable by AnythingLLM's Node lib.
+lancedb==0.15.0

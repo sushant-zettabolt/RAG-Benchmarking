@@ -281,12 +281,32 @@ services:
       JUDGE_SUBSCRIPTION_KEY: ${JUDGE_SUBSCRIPTION_KEY:-}
       WARMUP: ${WARMUP:-1}
       EVAL_LIMIT: ${EVAL_LIMIT:-}
+      RETRIEVAL_TOPN: ${RETRIEVAL_TOPN:-8}
+      RETRIEVAL_SIM_THRESHOLD: ${RETRIEVAL_SIM_THRESHOLD:-0.0}
       DATA_DIR: /data
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HOME: /data/hf-cache
+      # ── bulk ingest (write vectors straight into AnythingLLM's LanceDB) ───────
+      # BULK_INGEST=1 bypasses the per-doc HTTP upload path: the harness embeds
+      # chunks against the embed instance(s) and writes rows directly into the
+      # workspace's LanceDB table (mounted via anythingllm-storage). 0 = legacy
+      # HTTP API path. run_ingest.sh overrides EMBED_URLS/EMBED_CONCURRENCY per run
+      # to fan the embedding out across the data-parallel ingest instances.
+      BULK_INGEST: ${BULK_INGEST:-1}
+      ALLM_STORAGE: /allm-storage
+      EMBED_URL: ${EMBED_URL:-http://llama-embed:8080/v1}
+      EMBED_MODEL_NAME: ${EMBED_MODEL_NAME:-embed-model}
+      EMBED_REQ_BATCH: ${EMBED_REQ_BATCH:-64}
+      EMBED_CONCURRENCY: ${EMBED_CONCURRENCY:-8}
+      EMBED_CHUNK_WORDS: ${EMBED_CHUNK_WORDS:-512}
+      EMBED_CHUNK_OVERLAP_WORDS: ${EMBED_CHUNK_OVERLAP_WORDS:-100}
+      EMBED_MAX_CHUNK_CHARS: ${EMBED_MAX_CHUNK_CHARS:-8192}
     volumes:
       - ./src:/app:ro
       - ./data:/data
+      # Write access to AnythingLLM's storage so bulk ingest can create the
+      # LanceDB table directly (table name = workspace slug).
+      - anythingllm-storage:/allm-storage
     working_dir: /app
 
 volumes:

@@ -38,7 +38,7 @@ build:
 	$(DC) build harness
 
 ingest: build
-	$(RUN) ingest.py
+	./run_ingest.sh
 
 evaluate: build
 	$(RUN) evaluate.py
