@@ -93,11 +93,27 @@ node_cpus() {  # node -> space-separated logical CPU ids (physical-only if reque
 NAME_PREFIX="${PROJECT}-eingest"
 INSTANCE_NAMES=()
 
+# Remove EVERY ingest embed instance matching our name prefix — not just the ones
+# this run tracked. A previous run that crashed leaves stale containers holding
+# the names, and `docker run --name <existing>` then fails with Error 125.
+purge_instances() {  # quiet?
+    local stale
+    stale="$(docker ps -aq --filter "name=^/${NAME_PREFIX}-" 2>/dev/null)"
+    [ -n "$stale" ] || return 0
+    [ "${1:-}" = quiet ] || log "removing stale ingest embed instances ..."
+    docker rm -f $stale >/dev/null 2>&1 || true
+}
+
 cleanup() {
     log "tearing down ${#INSTANCE_NAMES[@]} ingest embed instances ..."
     for n in "${INSTANCE_NAMES[@]:-}"; do [ -n "$n" ] && docker rm -f "$n" >/dev/null 2>&1 || true; done
+    purge_instances quiet   # sweep any the array missed
 }
 trap cleanup EXIT INT TERM
+
+# Pre-flight: clear stale instances from a prior crashed run so name-collisions
+# (Error 125) can't happen on launch.
+purge_instances
 
 wait_up() {  # name
     for _ in $(seq 1 180); do

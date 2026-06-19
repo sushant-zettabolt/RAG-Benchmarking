@@ -65,7 +65,9 @@ wait_for() {  # name url tries
 }
 
 log "ensuring all services are up (chat + embed + support) ..."
-$DC_BASE up -d llama-chat llama-embed litellm prometheus pushgateway anythingllm >/dev/null 2>&1
+log "resetting embed server to benchmark config (.env threads/cpuset) ..."
+$DC_BASE up -d --force-recreate llama-embed >/dev/null 2>&1
+$DC_BASE up -d llama-chat litellm prometheus pushgateway anythingllm >/dev/null 2>&1
 [ -f data/ingest_metadata.json ] || die "no ingested data — run: make ingest"
 
 wait_for "llama-chat"  "http://localhost:${CHAT_PORT}/health"  240
@@ -87,6 +89,14 @@ if [ -n "$db_key" ] && [ "$db_key" != "$ALLM_KEY" ]; then
     sed -i "s|^ALLM_KEY=.*|ALLM_KEY=${db_key}|" .env
     ALLM_KEY="$db_key"
 fi
+
+RETRIEVAL_TOPN="$(env_get RETRIEVAL_TOPN 8)"
+RETRIEVAL_SIM_THRESHOLD="$(env_get RETRIEVAL_SIM_THRESHOLD 0.0)"
+log "syncing retrieval settings → topN=$RETRIEVAL_TOPN threshold=$RETRIEVAL_SIM_THRESHOLD"
+curl -fsS -m 30 "http://localhost:${ALLM_PORT}/api/v1/workspace/${SLUG}/update" \
+    -H "Authorization: Bearer ${ALLM_KEY}" -H 'Content-Type: application/json' \
+    -d "{\"topN\":${RETRIEVAL_TOPN},\"similarityThreshold\":${RETRIEVAL_SIM_THRESHOLD}}" >/dev/null 2>&1 \
+    || log "⚠️  WARNING: could not sync retrieval settings to workspace"
 
 log "all services healthy — embed server stays up for the entire run"
 
