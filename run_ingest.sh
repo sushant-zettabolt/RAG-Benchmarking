@@ -164,6 +164,18 @@ log "waiting for instances to load the model ..."
 for n in "${INSTANCE_NAMES[@]}"; do wait_up "$n" || { docker logs "$n" 2>&1 | tail -20; die "instance $n failed to come up"; }; done
 log "all $INSTANCES instances healthy."
 
+# ── make AnythingLLM's storage volume writable by the harness ────────────────
+# AnythingLLM owns its storage volume as its own uid (1000, mode 0755); the
+# harness runs as the host uid (HOST_UID, e.g. 1002) and so can't create the
+# `lancedb/` dir bulk_ingest writes the table into -> PermissionError. Create it
+# once as root (--user 0) via the harness service (which already mounts the
+# volume at /allm-storage) and make it world-writable, so the harness can write
+# the table AND AnythingLLM (1000) can still read it for retrieval. Idempotent.
+log "preparing LanceDB dir on the AnythingLLM storage volume ..."
+$DC run --rm --no-deps --user 0 harness \
+    sh -c 'mkdir -p /allm-storage/lancedb && chmod 0777 /allm-storage/lancedb' \
+    >/dev/null 2>&1 || die "could not prepare /allm-storage/lancedb (is the stack up?)"
+
 # Client concurrency = 2 in-flight batches per instance so none starve.
 CONC=$((INSTANCES * 2))
 log "running corpus ingest (bulk embed across $INSTANCES instances -> LanceDB; concurrency=$CONC) ..."
