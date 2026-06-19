@@ -30,7 +30,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libcurl4-openssl-dev \
         libgomp1 \
+        python3 \
+        python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
+# ^ python3 (+ `python` alias) is required by the ZenDNN backend's libxsmm
+#   dependency, whose Makefile invokes a Python interpreter for code generation.
 
 WORKDIR /src
 # Shallow-clone latest; if a ref is pinned, fetch and check it out for a fair A/B.
@@ -51,7 +55,11 @@ RUN cmake -B build \
         -DLLAMA_CURL=ON \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_EXAMPLES=OFF \
-    && cmake --build build --config Release --target llama-server -j"$(nproc)"
+    && cmake --build build --config Release --target llama-server -j"$(nproc)" \
+       || { echo "=== nested zendnn/libxsmm build+configure logs (on failure) ==="; \
+            find build -path '*zendnn*' \( -name '*-build-*.log' -o -name '*-configure-*.log' \) \
+                 -exec sh -c 'echo "---- $1 ----"; tail -50 "$1"' _ {} \; 2>/dev/null; \
+            echo "=== end logs ==="; exit 1; }
 
 # Collect the server binary + every shared lib it needs into one dir so the
 # runtime stage can grab them with a single COPY (paths differ baseline vs zendnn).
