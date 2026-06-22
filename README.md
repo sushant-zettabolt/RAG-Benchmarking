@@ -134,21 +134,24 @@ HARNESS_CPUSET=44-51
 
 How it's enforced:
 
-- **Both layers, belt-and-suspenders.** Docker `cpuset:` constrains each container
-  at the cgroup level; the two llama servers are *additionally* launched under
-  `numactl --physcpubind=<CPUSET> --membind=<node>` so the CPU affinity and memory
-  policy are also set in-process. (`numactl` is auto-installed into the llama image
-  when a membind is requested.)
+- **CPU and memory are bound by two different mechanisms.** Docker `cpuset:`
+  (`*_CPUSET`) constrains each container's **CPUs** at the cgroup level. For
+  **memory**, the Compose spec has no cgroup `cpuset-mems` field, so the two llama
+  servers additionally launch under `numactl --membind=<node>` (`*_MEMBIND`) to bind
+  allocations to the local NUMA node in-process. (`numactl` is baked into the llama
+  image.) Set each `*_MEMBIND` to the node that owns its `*_CPUSET` cores; leave it
+  empty to disable and fall back to the kernel's first-touch policy.
 - The llama services need the **`SYS_NICE`** capability (already in the compose
   file) — without it the kernel's default seccomp profile blocks `set_mempolicy`
   and `--membind` fails with *"Operation not permitted"*.
 - `numactl` can't run inside `prometheus` (distroless, no package manager) or the
-  app images, so the support services use the cgroup `cpuset` only — sufficient,
-  since they're I/O-light and first-touch keeps their memory node-local anyway.
-- Both `cpuset` and `--physcpubind` are *allowed-set* masks (threads may still
-  migrate **within** the set); they are not 1:1 core pinning. For strict
-  no-migration pinning use llama.cpp's `--cpu-mask` + `--cpu-strict 1` via
-  `CHAT_EXTRA_FLAGS`.
+  app images, so the support services get cgroup `cpuset` (CPU) only and have no
+  `*_MEMBIND` — sufficient, since they're I/O-light and first-touch keeps their
+  memory node-local anyway (each sits within one socket's CPUs).
+- `cpuset` is an *allowed-set* mask (threads may still migrate **within** the set);
+  it is not 1:1 core pinning, and `--membind` binds the memory *node*, not specific
+  CPUs. For strict no-migration CPU pinning use llama.cpp's `--cpu-mask` +
+  `--cpu-strict 1` via `CHAT_EXTRA_FLAGS`.
 
 The same `CHAT_CPUSET` also pins the chat server during the ZenDNN A/B run.
 

@@ -34,6 +34,10 @@ services:
       CHAT_NGL: ${CHAT_NGL:-0}
       CHAT_THREADS: ${CHAT_THREADS:-}
       CHAT_EXTRA_FLAGS: ${CHAT_EXTRA_FLAGS:-}
+      # NUMA memory node to bind allocations to (via numactl --membind). Compose has
+      # no cgroup cpuset-mems field, so memory binding is done in-process. Empty = off
+      # (rely on first-touch). Pair with CHAT_CPUSET on the same socket's CPUs.
+      CHAT_MEMBIND: ${CHAT_MEMBIND:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
@@ -41,11 +45,13 @@ services:
         if [ ! -f "$$CHAT_MODEL_PATH" ]; then echo "ERROR: chat model not found at $$CHAT_MODEL_PATH." >&2; exit 1; fi
         export OMP_PROC_BIND=close
         export OMP_PLACES=cores
+        PIN=""
+        if [ -n "$$CHAT_MEMBIND" ]; then PIN="numactl --membind=$$CHAT_MEMBIND"; echo "[llama-chat] binding memory to NUMA node(s) $$CHAT_MEMBIND"; fi
         ARGS="--host 0.0.0.0 --port 8080 --ctx-size $$CHAT_CTX --n-gpu-layers $$CHAT_NGL --parallel $$CHAT_PARALLEL --no-mmap -fa on --metrics --alias chat-model --model $$CHAT_MODEL_PATH"
         if [ -n "$$CHAT_THREADS" ]; then ARGS="$$ARGS --threads $$CHAT_THREADS"; fi
         ARGS="$$ARGS $$CHAT_EXTRA_FLAGS"
-        echo "[llama-chat] /app/llama-server $$ARGS"
-        exec /app/llama-server $$ARGS
+        echo "[llama-chat] $$PIN /app/llama-server $$ARGS"
+        exec $$PIN /app/llama-server $$ARGS
     volumes:
       - ${MODELS_DIR:-./models}:/models:ro
     ports:
@@ -85,16 +91,20 @@ services:
       EMBED_NGL: ${EMBED_NGL:-0}
       EMBED_THREADS: ${EMBED_THREADS:-}
       EMBED_EXTRA_FLAGS: ${EMBED_EXTRA_FLAGS:-}
+      # NUMA memory node to bind allocations to (via numactl --membind). See CHAT_MEMBIND.
+      EMBED_MEMBIND: ${EMBED_MEMBIND:-}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
         if [ -z "$$EMBED_MODEL_PATH" ]; then echo "ERROR: EMBED_MODEL_PATH is not set." >&2; exit 1; fi
         if [ ! -f "$$EMBED_MODEL_PATH" ]; then echo "ERROR: embedding model not found at $$EMBED_MODEL_PATH." >&2; exit 1; fi
+        PIN=""
+        if [ -n "$$EMBED_MEMBIND" ]; then PIN="numactl --membind=$$EMBED_MEMBIND"; echo "[llama-embed] binding memory to NUMA node(s) $$EMBED_MEMBIND"; fi
         ARGS="--host 0.0.0.0 --port 8080 --embedding --ctx-size $$EMBED_CTX --batch-size $$EMBED_BATCH --ubatch-size $$EMBED_UBATCH --n-gpu-layers $$EMBED_NGL --metrics --alias embed-model --model $$EMBED_MODEL_PATH"
         if [ -n "$$EMBED_THREADS" ]; then ARGS="$$ARGS --threads $$EMBED_THREADS"; fi
         ARGS="$$ARGS $$EMBED_EXTRA_FLAGS"
-        echo "[llama-embed] /app/llama-server $$ARGS"
-        exec /app/llama-server $$ARGS
+        echo "[llama-embed] $$PIN /app/llama-server $$ARGS"
+        exec $$PIN /app/llama-server $$ARGS
     volumes:
       - ${MODELS_DIR:-./models}:/models:ro
     ports:
