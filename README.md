@@ -5,6 +5,12 @@ Docker — including the LLM and embedding servers — so the only host requirem
 is **Docker + Docker Compose**. One `docker compose up` starts the stack; three
 commands ingest Google Natural Questions, evaluate, and produce a report.
 
+> **No Docker on your machine?** There's a side-by-side, **Docker-free** twin of
+> this whole stack under [`native/`](native/) — every service runs as a plain
+> user process (no Docker, no sudo, no root), with the same few-command flow
+> (`make -C native up && make -C native all`). See [`native/README.md`](native/README.md).
+> The two stacks are independent; this document covers the Docker stack.
+
 ```
         ┌─────────────┐   embed   ┌──────────────┐
         │ llama-embed │◀──────────│              │
@@ -56,6 +62,31 @@ data/
 ```
 
 A pre-generated example lives in [`reports/`](reports/).
+
+## Quick start (no Docker / bare metal)
+
+For machines without Docker (and without sudo/root), the [`native/`](native/) tree
+runs the identical pipeline as plain user processes. Everything — a local Node
+toolchain, Prometheus/Grafana/pushgateway, and AnythingLLM (built from source) —
+installs under `native/.runtime/` as your user.
+
+```bash
+cp native/config.env.example native/config.env   # set model paths / ports / NUMA
+make -C native setup        # one-time: install toolchains + build AnythingLLM (slow)
+make -C native up           # start all services (processes, no Docker) + seed AnythingLLM
+make -C native ingest       # ONE-TIME: download NQ + bulk-embed the corpus
+make -C native bench        # REPEATABLE: evaluate + report (run as often as you like)
+make -C native ab           # ZenDNN A/B (baseline vs zendnn build) + report_ab
+make -C native status       # running state + health of each service
+make -C native down         # stop everything
+```
+
+`make -C native all` does the full first run (`ingest` + `bench`) in one go; after
+that, re-measure with just `make -C native bench`.
+
+Outputs land in `native/data/` (same layout as `data/` above). The two stacks are
+independent and never share state. Full details — process management, port map,
+requirements, and limitations — are in [`native/README.md`](native/README.md).
 
 ## Configuration (`.env`)
 

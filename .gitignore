@@ -14,6 +14,14 @@ __pycache__/
 ci/runs/
 ci/history/
 
+# Native (no-Docker) stack: scripts + config.env.example ARE tracked; the local
+# toolchains, live config, runtime state, logs, and eval data are NOT.
+native/.runtime/
+native/run/
+native/logs/
+native/data/
+native/config.env
+
 # exported docker images are tracked via git-lfs, not ignored (see .gitattributes)
 
 # ── stale artifacts from the .sh-based stack on the main branch (not part of

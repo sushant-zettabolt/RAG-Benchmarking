@@ -26,8 +26,12 @@ if cur.fetchone()[0] == 0:
 else:
     print("api key already present")
 
-# LiteLLM is reachable from the anythingllm container as the compose service name
-base = "http://litellm:4000/v1"
+# LiteLLM base URL. In Docker this is the compose service name (default below); the
+# native (no-Docker) stack passes ALLM_LITELLM_BASE=http://127.0.0.1:<port>/v1.
+base = os.environ.get("ALLM_LITELLM_BASE", "http://litellm:4000/v1")
+# Chat model route AnythingLLM generates with. Default chat-model; the native A/B
+# fixed-decode pass overrides it to chat-model-bench via ALLM_MODEL_PREF.
+model_pref = os.environ.get("ALLM_MODEL_PREF", "chat-model")
 mk   = os.environ["LITELLM_MASTER_KEY"]
 ctx  = os.environ.get("CHAT_CTX", "8192")
 # Chunking: split long documents into ~EMBED_CHUNK_WORDS-word chunks with
@@ -49,11 +53,11 @@ overlap_chars = str(overlap_words * CHARS_PER_WORD)    # 100 words ->  600 chars
 settings = [
     ("LLMProvider",                  "generic-openai"),
     ("EmbeddingEngine",              "generic-openai"),
-    ("LLMPreference",                "chat-model"),
+    ("LLMPreference",                model_pref),
     ("EmbeddingModel",               "embed-model"),
     ("GenericOpenAiBasePath",        base),
     ("GenericOpenAiKey",             mk),
-    ("GenericOpenAiModelPref",       "chat-model"),
+    ("GenericOpenAiModelPref",       model_pref),
     ("GenericOpenAiTokenLimit",      ctx),
     ("EmbeddingBasePath",            base),
     # determineMaxChunkSize() caps the splitter chunk size at the embedder's max.
