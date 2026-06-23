@@ -1,0 +1,54 @@
+// Reference declarative pipeline for the ZenDNN regression watch.
+//
+// The running Jenkins controller does NOT use this file — its job is created
+// automatically by JCasC (docker/jenkins/casc.yaml), which inlines an equivalent
+// pipeline. This Jenkinsfile is here for teams that prefer "Pipeline script from
+// SCM": point a pipeline job at this path and it behaves the same.
+//
+// It is a thin wrapper around ci/run_ci.sh — all the real logic lives there so it
+// can be run and tested without Jenkins.
+pipeline {
+    agent any
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '60', artifactNumToKeepStr: '60'))
+    }
+    parameters {
+        booleanParam(
+            name: 'FRESH_BUILD',
+            defaultValue: true,
+            description: 'Rebuild baseline + ZenDNN images --no-cache (fresh pull of latest llama.cpp + public ZenDNN) before the eval.')
+    }
+    triggers {
+        // TESTING cadence: every 30 minutes. Real cadence: cron('H H(0-6) * * 1') (~weekly).
+        cron('H/30 * * * *')
+    }
+    environment {
+        PROJECT_DIR = "${env.PROJECT_DIR ?: '/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench'}"
+    }
+    stages {
+        stage('Run CI (fresh-pull rebuild + eval + compare)') {
+            steps {
+                dir(env.PROJECT_DIR) {
+                    sh "FRESH_BUILD=${params.FRESH_BUILD} bash ci/run_ci.sh"
+                }
+            }
+        }
+        stage('Publish verdict') {
+            steps {
+                dir(env.PROJECT_DIR) {
+                    script {
+                        def v = readFile('ci/runs/latest/verdict.txt').trim()
+                        echo "ZenDNN regression verdict: ${v}"
+                        currentBuild.description = v
+                        archiveArtifacts artifacts: 'ci/runs/latest/**', allowEmptyArchive: true
+                        if (v.startsWith('DEGRADE')) {
+                            currentBuild.result = 'UNSTABLE'
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

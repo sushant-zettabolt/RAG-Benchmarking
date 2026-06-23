@@ -223,6 +223,72 @@ backend baked into the image. `CHAT_MODEL_PATH` must point at a local GGUF (the
 A/B uses your real model, since ZenDNN targets matmul-bound prefill). A sample
 A/B report is in [`reports/`](reports/).
 
+## ZenDNN regression watch (Jenkins CI)
+
+llama.cpp and ZenDNN are moving open-source repos. A rebuild from latest source
+can quietly make the ZenDNN backend faster **or slower** than it was last week.
+This CI catches that: on a schedule it does a **fresh-pull rebuild**, re-runs the
+standard eval, and compares **this** ZenDNN run against the **previous** ZenDNN
+run — *strictly ZenDNN→ZenDNN across time* — and reports **degrade / neutral /
+speedup**. (The baseline column of each A/B report is only used for the in-run
+A/B; it is not what the watchdog tracks.)
+
+```bash
+# one cycle by hand (same logic Jenkins runs):
+make ci                         # FRESH_BUILD=0 bash ci/run_ci.sh  → quick wiring test
+FRESH_BUILD=1 make ci           # full fresh-pull rebuild + eval + compare
+
+# or run the scheduler:
+make jenkins-up                 # build + start the Jenkins controller
+# open http://localhost:8088  (admin / admin)  → job "zendnn-regression-watch"
+```
+
+**What a run does** (`ci/run_ci.sh`):
+
+1. **Fresh pull** — `scripts/build_llama.sh --no-cache` re-clones latest
+   llama.cpp `HEAD` and re-fetches public ZenDNN, rebuilding both images
+   (`FRESH_BUILD=1`, the scheduled default). The exact llama.cpp commit is
+   recorded with each result.
+2. **Reuse the ingested corpus** — it does **not** re-ingest, so documents and
+   retrieval are identical across time and the only thing that changed is the
+   rebuilt backend. (It ingests once only if no corpus exists yet.)
+3. **Eval** — runs `run_ab.sh` over `CI_EVAL_LIMIT` queries (default **10**) per
+   backend.
+4. **Compare** — `ci/compare_zendnn.py` extracts the ZenDNN throughput
+   (`prefill_tps`, `decode_tps`) and latency metrics, diffs them against the
+   previous run in `ci/history/zendnn_history.jsonl`, and writes a verdict.
+
+Verdict is decided on the headline throughput metrics against
+`CI_CMP_THRESHOLD_PCT` (default ±5 %): improvement ≥ threshold → **SPEEDUP**,
+regression ≥ threshold → **DEGRADE** (a degrade in either headline metric wins),
+else **NEUTRAL**. The first run has nothing to compare against and is recorded as
+the **BASELINE**.
+
+**Outputs** (all under `ci/`, git-ignored — `reports/` and `data/results/` are
+never touched):
+
+| Path | What |
+|---|---|
+| `ci/runs/<ts>/verdict.md` | per-run comparison table (throughput / latency / quality) |
+| `ci/runs/<ts>/verdict.txt` | one-line machine verdict, e.g. `DEGRADE prefill_tps -8.3%` |
+| `ci/runs/<ts>/report_ab.{md,json}` | the A/B report snapshot for that run |
+| `ci/runs/latest/` | copy of the most recent run (Jenkins archives this) |
+| `ci/history/zendnn_history.jsonl` | one line per run — the across-time series |
+
+**Schedule.** The job is created automatically by Jenkins Configuration-as-Code
+(`docker/jenkins/casc.yaml`) with a **testing cron of every 30 minutes**
+(`H/30 * * * *`). For the real weekly cadence, change that trigger to
+`H H(0-6) * * 1` (≈ weekly, early Monday) and rebuild the image / re-up. A
+DEGRADE marks the build **UNSTABLE** (yellow); set `CI_FAIL_ON_DEGRADE=1` to fail
+it red instead.
+
+**How it reaches Docker.** The Jenkins container (`docker-compose.jenkins.yml`,
+its own `nqrag-ci` compose project) mounts the host `docker.sock` and bind-mounts
+the repo at the **same absolute path** as the host (`PROJECT_DIR`) — required, so
+the benchmark containers it launches resolve their bind mounts on the host
+filesystem. Config knobs live in `.env` (`PROJECT_DIR`, `JENKINS_PORT`,
+`JENKINS_CPUSET`, `CI_EVAL_LIMIT`, `CI_CMP_THRESHOLD_PCT`, admin creds).
+
 ## Dataset notes
 
 - **Documents** come from `BeIR/nq` (Google NQ Wikipedia passages).

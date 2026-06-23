@@ -1,0 +1,25 @@
+# Jenkins Configuration as Code — the controller comes up fully configured:
+# an admin user, and a pipeline job ("zendnn-regression-watch") that runs the CI
+# on a cron schedule. No manual UI setup. Override the cron / admin creds via the
+# JENKINS_* env vars in docker-compose.jenkins.yml (.env).
+jenkins:
+  systemMessage: "ZenDNN RAG-benchmark regression CI — auto-configured via JCasC. Job: zendnn-regression-watch"
+  numExecutors: 1
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "${JENKINS_ADMIN_ID:-admin}"
+          password: "${JENKINS_ADMIN_PASSWORD:-admin}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+unclassified:
+  location:
+    url: "${JENKINS_URL:-http://localhost:8088/}"
+
+# The pipeline job is defined in a separate Job DSL script (kept out of YAML to
+# avoid quoting/indentation pitfalls). See docker/jenkins/seed_job.groovy.
+jobs:
+  - file: /var/jenkins_conf/seed_job.groovy

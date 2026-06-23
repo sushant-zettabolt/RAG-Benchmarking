@@ -3,7 +3,13 @@ DC := docker compose
 RUN := $(DC) run --rm harness python
 
 .PHONY: help setup up down logs ps ingest evaluate report all clean clean-all \
-        build build-llama save-images load-images
+        build build-llama save-images load-images \
+        ci jenkins-up jenkins-down jenkins-logs
+
+# -p forces an isolated project name. Without it, COMPOSE_PROJECT_NAME from .env
+# overrides the compose file's `name:` and Jenkins would share the benchmark
+# stack's project (causing "orphan container" churn on `make down`).
+DC_JENKINS := docker compose -p nqrag-ci -f docker-compose.jenkins.yml
 
 help:
 	@echo "Targets:"
@@ -14,6 +20,9 @@ help:
 	@echo "  make all          ingest + evaluate + report"
 	@echo "  make build-llama  build llama.cpp backend IMAGES (baseline + zendnn) from source for the A/B"
 	@echo "  make ab           ZenDNN A/B: baseline vs zendnn (sequential) + report"
+	@echo "  make ci           run ONE regression-watch cycle now (rebuild+eval+compare)"
+	@echo "  make jenkins-up   build + start the Jenkins CI controller (cron: zendnn watch)"
+	@echo "  make jenkins-down | jenkins-logs    Jenkins lifecycle"
 	@echo "  make up | down | logs | ps    stack lifecycle"
 	@echo "  make save-images / load-images   export/import images for git-lfs"
 	@echo "  make clean        remove generated data/results (keeps volumes)"
@@ -56,6 +65,21 @@ ab: build
 
 report-ab: build
 	$(RUN) report_ab.py
+
+# ── ZenDNN regression CI ─────────────────────────────────────────────────────
+# One cycle by hand (Jenkins runs this same script on a schedule). FRESH_BUILD=0
+# skips the no-cache rebuild for a quick wiring test.
+ci:
+	bash ci/run_ci.sh
+
+jenkins-up:
+	$(DC_JENKINS) up -d --build
+
+jenkins-down:
+	$(DC_JENKINS) down
+
+jenkins-logs:
+	$(DC_JENKINS) logs -f --tail 100
 
 save-images:
 	./scripts/save_images.sh

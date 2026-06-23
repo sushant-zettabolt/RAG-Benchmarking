@@ -1,0 +1,6 @@
+# Pipeline + automation plugins (dependencies are resolved automatically).
+configuration-as-code
+job-dsl
+workflow-aggregator
+workflow-job
+timestamper

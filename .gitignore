@@ -9,6 +9,11 @@ models/
 __pycache__/
 *.pyc
 
+# CI runtime artifacts (Jenkins regression watch): per-run snapshots + history.
+# The CI scripts (ci/*.sh, ci/*.py, ci/Jenkinsfile) ARE tracked; their output is not.
+ci/runs/
+ci/history/
+
 # exported docker images are tracked via git-lfs, not ignored (see .gitattributes)
 
 # ── stale artifacts from the .sh-based stack on the main branch (not part of
