@@ -42,6 +42,10 @@ OVERLAP_WORDS   = int(os.environ.get("EMBED_CHUNK_OVERLAP_WORDS", "") or 100)
 MAX_CHUNK_CHARS = int(os.environ.get("EMBED_MAX_CHUNK_CHARS", "") or 8192)
 CHUNK_CHARS     = min(CHUNK_WORDS * CHARS_PER_WORD, MAX_CHUNK_CHARS)
 OVERLAP_CHARS   = min(OVERLAP_WORDS * CHARS_PER_WORD, max(CHUNK_CHARS - 1, 0))
+# EMBED_NO_SPLIT=1 keeps each document as ONE whole chunk (no windowing). Used for
+# corpora whose documents already fit the embed context whole (e.g. SQuAD contexts,
+# <=653 words). The splitter below is left intact — this only bypasses it.
+NO_SPLIT        = os.environ.get("EMBED_NO_SPLIT", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def split_text(text, size=CHUNK_CHARS, overlap=OVERLAP_CHARS):
@@ -66,6 +70,15 @@ def split_text(text, size=CHUNK_CHARS, overlap=OVERLAP_CHARS):
             break
         start = max(end - overlap, start + 1)
     return chunks
+
+
+def chunk_document(text):
+    """Split `text` into chunks for embedding. With EMBED_NO_SPLIT the whole
+    document is kept as a single chunk; otherwise the overlap-window splitter runs."""
+    if NO_SPLIT:
+        t = (text or "").strip()
+        return [t] if t else []
+    return split_text(text)
 
 
 def _embed_batch(texts, url):
@@ -122,7 +135,7 @@ def bulk_store(slug, docs, write_batch=2000):
     # 1) chunk every document
     chunk_texts, metas = [], []
     for (name, body, title) in docs:
-        for ci, ch in enumerate(split_text(body)):
+        for ci, ch in enumerate(chunk_document(body)):
             chunk_texts.append(ch)
             metas.append((title or "", f"{slug}/{name}#chunk{ci}"))
     if not chunk_texts:

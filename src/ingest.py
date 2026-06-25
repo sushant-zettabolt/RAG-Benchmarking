@@ -53,6 +53,15 @@ RETRIEVAL_SIM_THRESHOLD = C.envf("RETRIEVAL_SIM_THRESHOLD", 0.0)
 # so the full corpus scales. 0 = legacy per-doc HTTP upload path.
 BULK_INGEST = os.environ.get("BULK_INGEST", "1").strip().lower() not in ("", "0", "false", "no")
 
+# ── SQuAD source (local file) ────────────────────────────────────────────────
+# INGEST_SOURCE=squad ingests a local SQuAD-style JSONL instead of the HF NQ
+# datasets. Each line carries {question, context, answer, all_answers}. The
+# `context` strings are the corpus (one context = one document = one chunk; SQuAD
+# contexts are <=653 words so no splitting is needed — bulk_ingest's splitter is
+# disabled via EMBED_NO_SPLIT=1). The question + all_answers become the eval set.
+INGEST_SOURCE = os.environ.get("INGEST_SOURCE", "nq").strip().lower()
+SQUAD_FILE    = os.environ.get("SQUAD_FILE", "/squad/train.jsonl")
+
 
 def load_eval_questions():
     print(f"[ingest] loading {EVAL_N} eval questions from {EVAL_DATASET} ...")
@@ -149,6 +158,96 @@ def build_corpus(questions, passages):
     return docs
 
 
+def load_squad_rows():
+    print(f"[ingest] loading SQuAD rows from {SQUAD_FILE} ...")
+    rows = []
+    with open(SQUAD_FILE) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    print(f"[ingest] {len(rows)} SQuAD rows")
+    return rows
+
+
+def _squad_answers(r):
+    """Golden answers for a SQuAD row: prefer all_answers, fall back to answer.
+    Deduped, order-preserving, blanks dropped."""
+    ans = r.get("all_answers")
+    if not ans:
+        a = r.get("answer")
+        ans = [a] if a else []
+    if isinstance(ans, str):
+        ans = [ans]
+    out, seen = [], set()
+    for a in ans:
+        a = (a or "").strip()
+        if a and a not in seen:
+            seen.add(a)
+            out.append(a)
+    return out
+
+
+def build_squad(rows):
+    """SQuAD corpus: one UNIQUE context = one document = one chunk (no packing,
+    no splitting — contexts are <=653 words and fit the embed context whole).
+
+    Eval questions are sampled EVENLY across the file (SQuAD groups many questions
+    under the same article, so the first N rows would all share a few contexts);
+    each keeps its all_answers as golden references. The corpus is every unique
+    context: every eval question's context first (so it's answerable), then the
+    remaining unique contexts as distractors up to DOC_N (DOC_N=0 => all).
+    Returns (docs, questions) with docs = list of (fname, body)."""
+    n = len(rows)
+    k = min(EVAL_N if EVAL_N > 0 else n, n)
+    if k >= n:
+        idxs = list(range(n))
+    else:
+        stride = n / k                                  # evenly spaced sample
+        idxs = [int(i * stride) for i in range(k)]
+
+    ctx_to_doc, docs = {}, []
+
+    def add_context(ctx):
+        ctx = (ctx or "").strip()
+        if not ctx:
+            return None
+        if ctx in ctx_to_doc:
+            return ctx_to_doc[ctx]
+        fname = f"doc_{len(docs):05d}.txt"
+        ctx_to_doc[ctx] = fname
+        docs.append((fname, ctx + "\n"))
+        return fname
+
+    # 1) eval questions — their contexts are ingested first (guarantees answerable)
+    questions = []
+    for qi, ri in enumerate(idxs):
+        r = rows[ri]
+        fname = add_context(r.get("context", ""))
+        questions.append({
+            "id": qi,
+            "question": (r.get("question") or "").strip(),
+            "answers": _squad_answers(r),
+            "doc_file": fname,
+            "answerable": fname is not None,
+        })
+
+    # 2) fill the corpus with the remaining unique contexts (distractors) up to
+    #    DOC_N; DOC_N=0 => ingest ALL unique contexts in the file.
+    for r in rows:
+        if DOC_N and len(docs) >= DOC_N:
+            break
+        add_context(r.get("context", ""))
+
+    print(f"[ingest] SQuAD: {len(questions)} eval questions, "
+          f"{len(docs)} unique-context documents (DOC_N={DOC_N or 'all'})")
+    return docs, questions
+
+
 def write_docs(docs):
     for old in glob.glob(os.path.join(C.DOCS_DIR, "*.txt")):
         os.remove(old)
@@ -238,9 +337,13 @@ def main():
     if not C.ALLM_KEY:
         raise SystemExit("ALLM_KEY is empty — run ./setup.sh first (it generates one).")
 
-    questions = load_eval_questions()
-    passages  = load_corpus_passages()
-    docs      = build_corpus(questions, passages)
+    if INGEST_SOURCE == "squad":
+        rows = load_squad_rows()
+        docs, questions = build_squad(rows)
+    else:
+        questions = load_eval_questions()
+        passages  = load_corpus_passages()
+        docs      = build_corpus(questions, passages)
 
     with open(C.EVAL_FILE, "w") as f:
         for q in questions:
@@ -253,14 +356,14 @@ def main():
 
     meta = {
         "timestamp": time.time(),
-        "eval_dataset": EVAL_DATASET,
-        "corpus_dataset": CORPUS_DATASET,
+        "ingest_source": INGEST_SOURCE,
+        "eval_dataset": SQUAD_FILE if INGEST_SOURCE == "squad" else EVAL_DATASET,
+        "corpus_dataset": SQUAD_FILE if INGEST_SOURCE == "squad" else CORPUS_DATASET,
         "workspace_slug": slug,
         "docs_requested": DOC_N,
         "docs_written": len(docs),
         "eval_questions": len(questions),
         "answerable_questions": answerable,
-        "corpus_scanned": len(passages),
     }
 
     if BULK_INGEST:

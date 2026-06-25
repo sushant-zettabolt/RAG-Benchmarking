@@ -25,7 +25,10 @@ LITELLM_PORT="$(env_get LITELLM_PORT 4000)"
 PUSHGW_PORT="$(env_get PUSHGW_PORT 9091)"
 SLUG="$(env_get SLUG nq-bench)"
 ALLM_KEY="$(env_get ALLM_KEY '')"
-CHAT_MODEL_PATH="$(env_get CHAT_MODEL_PATH '')"
+# Prefer an exported CHAT_MODEL_PATH (the CI model-sweep sets one per model) over
+# the .env value, so run_ab.sh can be driven across several models without
+# rewriting .env each time. Falls back to .env for a plain single-model run.
+CHAT_MODEL_PATH="${CHAT_MODEL_PATH:-$(env_get CHAT_MODEL_PATH '')}"
 
 # A/B knobs (override in .env). The two backends are build-from-source IMAGES
 # (built by `make build-llama` / scripts/build_llama.sh) — no host binaries, no

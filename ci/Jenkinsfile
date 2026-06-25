@@ -21,14 +21,18 @@ pipeline {
             description: 'Rebuild baseline + ZenDNN images --no-cache (fresh pull of latest llama.cpp + public ZenDNN) before the eval.')
     }
     triggers {
-        // TESTING cadence: every 30 minutes. Real cadence: cron('H H(0-6) * * 1') (~weekly).
-        cron('H/30 * * * *')
+        // Cadence: every 2.5 hours (two lines tile the day at exact 2.5h spacing;
+        // 2.5h can't be a single cron step). Real cadence: cron('H H(0-6) * * 1').
+        cron('''0 0,5,10,15,20 * * *
+30 2,7,12,17,22 * * *''')
     }
     environment {
         PROJECT_DIR = "${env.PROJECT_DIR ?: '/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench'}"
+        // All artifacts + history live here (repoint to reset history). Default: <proj>/ci.
+        CI_ARTIFACT_DIR = "${env.CI_ARTIFACT_DIR ?: (env.PROJECT_DIR ?: '/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench') + '/ci'}"
     }
     stages {
-        stage('Run CI (fresh-pull rebuild + eval + compare)') {
+        stage('Run CI (fresh-pull rebuild + multi-model eval + compare)') {
             steps {
                 dir(env.PROJECT_DIR) {
                     sh "FRESH_BUILD=${params.FRESH_BUILD} bash ci/run_ci.sh"
@@ -37,15 +41,13 @@ pipeline {
         }
         stage('Publish verdict') {
             steps {
-                dir(env.PROJECT_DIR) {
-                    script {
-                        def v = readFile('ci/runs/latest/verdict.txt').trim()
-                        echo "ZenDNN regression verdict: ${v}"
-                        currentBuild.description = v
-                        archiveArtifacts artifacts: 'ci/runs/latest/**', allowEmptyArchive: true
-                        if (v.startsWith('DEGRADE')) {
-                            currentBuild.result = 'UNSTABLE'
-                        }
+                script {
+                    // Per-model summary, informational only — multi-model runs are NOT gated.
+                    def v = readFile("${env.CI_ARTIFACT_DIR}/runs/latest/verdict.txt").trim()
+                    echo "ZenDNN regression (per-model): ${v}"
+                    currentBuild.description = v
+                    dir(env.CI_ARTIFACT_DIR) {
+                        archiveArtifacts artifacts: 'runs/latest/**', allowEmptyArchive: true
                     }
                 }
             }

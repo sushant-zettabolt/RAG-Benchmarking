@@ -45,16 +45,40 @@ services:
       PROJECT_DIR: ${PROJECT_DIR:-/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench}
       HOST_UID: ${HOST_UID:-1002}
       HOST_GID: ${HOST_GID:-1002}
+      # Single artifact+history root. The pipeline reads/writes ONLY here, and the
+      # Publish stage reads the verdict + archives from it — so repointing this var
+      # makes the Jenkins UI reflect a different history. Bind-mounted below.
+      CI_ARTIFACT_DIR: ${CI_ARTIFACT_DIR:-${PROJECT_DIR:-/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench}/ci}
+      # Models swept by the CI (run_ci.sh enumerates + dereferences these).
+      CHAT_MODELS_DIR: ${CHAT_MODELS_DIR:?set CHAT_MODELS_DIR in .env to the dir of chat GGUFs to sweep}
+      MODELS_DIR: ${MODELS_DIR:?set MODELS_DIR in .env}
     volumes:
-      - jenkins-home:/var/jenkins_home
+      # JENKINS_HOME — ALL persistent controller state (build history shown in the
+      # UI, console logs, archived artifacts, build-number counter, job config)
+      # lives in a `jenkins_home` subdir of the mounted artifact dir, NOT in a
+      # docker-managed volume. This is what makes the artifact dir the single
+      # source of truth: repoint CI_ARTIFACT_DIR (dir1 -> dir2), restart, and
+      # Jenkins boots a FRESH home from dir2 — dir1's builds/history vanish from
+      # the UI and are never used for comparison. JCasC (mounted read-only below)
+      # re-creates the job on every boot, so a fresh home still comes up fully
+      # configured. Nothing controller-side is kept inside the container.
+      - ${CI_ARTIFACT_DIR:-${PROJECT_DIR:-/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench}/ci}/jenkins_home:/var/jenkins_home
       - ./docker/jenkins/casc.yaml:/var/jenkins_conf/casc.yaml:ro
       - ./docker/jenkins/seed_job.groovy:/var/jenkins_conf/seed_job.groovy:ro
       - /var/run/docker.sock:/var/run/docker.sock
       # Project bind-mounted at the SAME absolute path as on the host (see header).
       - ${PROJECT_DIR:-/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench}:${PROJECT_DIR:-/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench}
+      # Artifact+history root, bind-mounted at its identical absolute path so the
+      # pipeline writes there and the host keeps everything (the "consult this dir
+      # only for history" requirement). Default is the in-repo ci/ tree.
+      - ${CI_ARTIFACT_DIR:-${PROJECT_DIR:-/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench}/ci}:${CI_ARTIFACT_DIR:-${PROJECT_DIR:-/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench}/ci}
+      # Model dirs, identical-path read-only, so run_ci.sh can list CHAT_MODELS_DIR
+      # and readlink -f each GGUF to its real target under MODELS_DIR.
+      - ${CHAT_MODELS_DIR:?set CHAT_MODELS_DIR in .env}:${CHAT_MODELS_DIR}:ro
+      - ${MODELS_DIR:?set MODELS_DIR in .env}:${MODELS_DIR}:ro
     # No `ports:` — host networking publishes JENKINS_OPTS --httpPort directly on
     # the host. Jenkins UI: http://localhost:${JENKINS_PORT:-8088}
     restart: unless-stopped
 
-volumes:
-  jenkins-home:
+# No named volumes: every persistent path (Jenkins home + CI runs/history) is a
+# bind-mount under CI_ARTIFACT_DIR, so the mounted dir holds 100% of the state.

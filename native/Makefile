@@ -8,7 +8,7 @@
 SHELL := /bin/bash
 HERE  := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: help setup up down status ingest evaluate report bench all ab logs
+.PHONY: help setup up down status ingest evaluate report bench all ab logs clean clean-all
 help:
 	@echo "Native stack targets (all no-Docker):"
 	@echo "  setup     install local toolchains (node/prom/grafana/pushgw) + build AnythingLLM"
@@ -22,6 +22,8 @@ help:
 	@echo "  all       full first run = ingest + bench"
 	@echo "  ab        ZenDNN A/B (baseline vs zendnn build) + report_ab"
 	@echo "  logs      tail all service logs"
+	@echo "  clean     remove ingested data (corpus vectors + eval set + results; keeps HF cache)"
+	@echo "  clean-all clean + also remove the HF dataset download cache"
 
 setup:    ; bash "$(HERE)setup.sh"
 up:       ; bash "$(HERE)up.sh"
@@ -36,3 +38,16 @@ bench: evaluate report
 all: ingest bench
 ab:       ; bash "$(HERE)run_ab.sh"
 logs:     ; tail -n +1 -F "$(HERE)logs/"*.log
+
+# Remove what `ingest` produced so the next ingest starts pristine: the eval set,
+# ingested docs, results, and the LanceDB vector table. Keeps the HF download cache
+# (re-downloading NQ is wasteful) and the toolchains. Mirrors the Docker `make clean`.
+clean:
+	@rm -rf "$(HERE)data/docs" "$(HERE)data/results" \
+	        "$(HERE)data/eval.jsonl" "$(HERE)data/ingest_metadata.json" \
+	        "$(HERE).runtime/anythingllm/server/storage/lancedb"
+	@echo "[native] cleaned ingested data (vectors + eval set + results). HF cache kept."
+
+clean-all: clean
+	@rm -rf "$(HERE)data/hf-cache"
+	@echo "[native] also removed the HF dataset download cache."

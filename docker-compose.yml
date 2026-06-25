@@ -276,6 +276,10 @@ services:
       ALLM_KEY: ${ALLM_KEY:-}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-bench-master}
       SLUG: ${SLUG:-nq-bench}
+      # INGEST_SOURCE=squad ingests SQUAD_FILE (a local SQuAD-style JSONL mounted
+      # at /squad) instead of the HF NQ datasets below. See src/ingest.py.
+      INGEST_SOURCE: ${INGEST_SOURCE:-nq}
+      SQUAD_FILE: ${SQUAD_FILE:-/squad/train.jsonl}
       EVAL_DATASET: ${EVAL_DATASET:-nq_open}
       CORPUS_DATASET: ${CORPUS_DATASET:-BeIR/nq}
       DOC_N: ${DOC_N:-100}
@@ -310,9 +314,15 @@ services:
       EMBED_CHUNK_WORDS: ${EMBED_CHUNK_WORDS:-512}
       EMBED_CHUNK_OVERLAP_WORDS: ${EMBED_CHUNK_OVERLAP_WORDS:-100}
       EMBED_MAX_CHUNK_CHARS: ${EMBED_MAX_CHUNK_CHARS:-8192}
+      # EMBED_NO_SPLIT=1 keeps each document as one whole chunk (bypasses the
+      # splitter) — used for SQuAD, whose contexts already fit the embed context.
+      EMBED_NO_SPLIT: ${EMBED_NO_SPLIT:-}
     volumes:
       - ./src:/app:ro
       - ./data:/data
+      # SQuAD source file (read-only) for INGEST_SOURCE=squad. SQUAD_DIR on the
+      # host is mounted at /squad; SQUAD_FILE points inside it.
+      - ${SQUAD_DIR:-./data/squad}:/squad:ro
       # Write access to AnythingLLM's storage so bulk ingest can create the
       # LanceDB table directly (table name = workspace slug).
       - anythingllm-storage:/allm-storage

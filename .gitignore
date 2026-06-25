@@ -9,10 +9,14 @@ models/
 __pycache__/
 *.pyc
 
-# CI runtime artifacts (Jenkins regression watch): per-run snapshots + history.
+# CI runtime artifacts (Jenkins regression watch): per-run snapshots, history,
+# archived reports, and the Jenkins controller home (build history/console logs/
+# job config — only present when CI_ARTIFACT_DIR is left at the default repo/ci).
 # The CI scripts (ci/*.sh, ci/*.py, ci/Jenkinsfile) ARE tracked; their output is not.
 ci/runs/
 ci/history/
+ci/reports/
+ci/jenkins_home/
 
 # Native (no-Docker) stack: scripts + config.env.example ARE tracked; the local
 # toolchains, live config, runtime state, logs, and eval data are NOT.

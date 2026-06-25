@@ -23,6 +23,31 @@ for line in sys.stdin:
     echo "[setup] created .env from .env.example"
 fi
 
+set_env() {  # set_env KEY VALUE — upsert KEY into .env
+    local k="$1" v="$2"
+    if grep -qE "^${k}=" .env; then
+        sed -i "s|^${k}=.*|${k}=${v}|" .env
+    else
+        echo "${k}=${v}" >> .env
+    fi
+}
+
+# ── portability: derive the machine-specific values from THIS host ───────────
+# PROJECT_DIR (bind-mounted into Jenkins at the same absolute path) and the host
+# UID/GID (so containers write files owned by you) must match the machine the
+# stack runs on. Auto-set them here so a freshly-cloned repo on any box is
+# correct without hand-editing .env or carrying another machine's paths.
+set_env PROJECT_DIR "$(pwd)"
+set_env HOST_UID "$(id -u)"
+set_env HOST_GID "$(id -g)"
+# CI artifact+history root defaults to this repo's ci/ tree (absolute), unless the
+# user already pointed it elsewhere. Only fill it when blank so a deliberate
+# override survives re-running setup.
+if [ -z "$(grep -E '^CI_ARTIFACT_DIR=' .env | head -1 | cut -d= -f2-)" ]; then
+    set_env CI_ARTIFACT_DIR "$(pwd)/ci"
+fi
+echo "[setup] pinned PROJECT_DIR=$(pwd)  HOST_UID=$(id -u)  HOST_GID=$(id -g)  CI_ARTIFACT_DIR=$(grep -E '^CI_ARTIFACT_DIR=' .env | head -1 | cut -d= -f2-)"
+
 env_get() {  # env_get KEY DEFAULT
     local v
     v="$(grep -E "^$1=" .env | head -1 | cut -d= -f2-)"
