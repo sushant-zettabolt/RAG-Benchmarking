@@ -73,6 +73,11 @@ def header_for(left_suffix, right_suffix):
         "decode_token_size",
         f"decode_tps_{left_suffix}", f"decode_tps_{right_suffix}",
         "decode_tps_delta_percentage", "decode_perf_tag",
+        # end-to-end wall time per query (request -> SSE close), in SECONDS. Unlike
+        # the throughput columns above, LOWER is better, so its tag is latency-aware
+        # (a NEGATIVE delta % = right side is faster = SPEEDUP).
+        f"e2e_total_s_{left_suffix}", f"e2e_total_s_{right_suffix}",
+        "e2e_total_s_delta_percentage", "e2e_latency_tag",
     ]
 
 
@@ -124,6 +129,21 @@ def perf_tag(delta_pct, threshold):
     return "NEUTRAL"
 
 
+def latency_tag(delta_pct, threshold):
+    """SPEEDUP/DEGRADE/NEUTRAL for a latency metric (LOWER is better).
+
+    Inverse of perf_tag: end-to-end time going DOWN (negative delta beyond
+    -threshold) is a speed-up; going UP (positive beyond +threshold) is a
+    slow-down. BASELINE when there's nothing to compare against."""
+    if delta_pct is None:
+        return "BASELINE"
+    if delta_pct <= -threshold:
+        return "SPEEDUP"
+    if delta_pct >= threshold:
+        return "DEGRADE"
+    return "NEUTRAL"
+
+
 def accuracy_tag(prev_ok, curr_ok):
     """Did this question flip correctness from left (prev) to right (curr)?"""
     if prev_ok is None or curr_ok is None:
@@ -160,6 +180,10 @@ def ftps(v):
     return "" if v is None else f"{float(v):.1f}"
 
 
+def fsec(v):
+    return "" if v is None else f"{float(v):.2f}"
+
+
 def fpct(v):
     return "" if v is None else f"{v:+.1f}"
 
@@ -179,7 +203,7 @@ def build_comparison(left, right, out_path, threshold,
     each model's questions are grouped together in the CSV."""
     keys = sorted(set(left) | set(right),
                   key=lambda k: ((k[0] is None, k[0]), (k[1] is None, k[1])))
-    counts = {"prefill": {}, "decode": {}, "acc": {}}
+    counts = {"prefill": {}, "decode": {}, "e2e": {}, "acc": {}}
     regressions = []
     rows_out = []
 
@@ -214,8 +238,15 @@ def build_comparison(left, right, out_path, threshold,
         dc_d = pct_delta(dc_l, dc_r)
         dc_tag = perf_tag(dc_d, threshold)
 
+        # end-to-end wall time per query (seconds, lower is better → latency tag)
+        e2_l = (l or {}).get("total_s")
+        e2_r = (r or {}).get("total_s")
+        e2_d = pct_delta(e2_l, e2_r)
+        e2_tag = latency_tag(e2_d, threshold)
+
         counts["prefill"][pf_tag] = counts["prefill"].get(pf_tag, 0) + 1
         counts["decode"][dc_tag] = counts["decode"].get(dc_tag, 0) + 1
+        counts["e2e"][e2_tag] = counts["e2e"].get(e2_tag, 0) + 1
         counts["acc"][a_tag] = counts["acc"].get(a_tag, 0) + 1
 
         # one data row, in the exact order of header_for(left_suffix, right_suffix)
@@ -227,6 +258,7 @@ def build_comparison(left, right, out_path, threshold,
             ftps(pf_l), ftps(pf_r), fpct(pf_d), pf_tag,
             fint(decode_size),
             ftps(dc_l), ftps(dc_r), fpct(dc_d), dc_tag,
+            fsec(e2_l), fsec(e2_r), fpct(e2_d), e2_tag,
         ])
 
     with open(out_path, "w", newline="") as f:
@@ -312,7 +344,7 @@ def main():
         written.append((fname, n))
         rgw = f"   ⚠️ accuracy DEGRADED on {regressions}" if regressions else ""
         print(f"  • {label:<26} {n:>3} rows -> {fname}")
-        print(f"      prefill {counts['prefill']}  decode {counts['decode']}  acc {counts['acc']}{rgw}")
+        print(f"      prefill {counts['prefill']}  decode {counts['decode']}  e2e {counts['e2e']}  acc {counts['acc']}{rgw}")
 
     # ── update the persistent prev-run pointer to THIS run ───────────────────
     new_ptr = {

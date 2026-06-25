@@ -21,10 +21,8 @@ pipeline {
             description: 'Rebuild baseline + ZenDNN images --no-cache (fresh pull of latest llama.cpp + public ZenDNN) before the eval.')
     }
     triggers {
-        // Cadence: every 2.5 hours (two lines tile the day at exact 2.5h spacing;
-        // 2.5h can't be a single cron step). Real cadence: cron('H H(0-6) * * 1').
-        cron('''0 0,5,10,15,20 * * *
-30 2,7,12,17,22 * * *''')
+        // Cadence: weekly — early Monday, exact minute/hour hashed within hour 0-6.
+        cron('H H(0-6) * * 1')
     }
     environment {
         PROJECT_DIR = "${env.PROJECT_DIR ?: '/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench'}"

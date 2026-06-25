@@ -11,13 +11,10 @@ pipelineJob('zendnn-regression-watch') {
         artifactNumToKeep(60)
     }
     triggers {
-        // ── Cadence: every 2.5 hours. Cron can't step by 150 min in one line
-        //    (2.5h doesn't divide 24h evenly), so two lines tile the day at exact
-        //    2.5h spacing — 00:00,02:30,05:00,07:30,10:00,12:30,15:00,17:30,20:00,
-        //    22:30 (the only short gap is the 22:30->00:00 wrap, 1.5h). For the
-        //    real weekly cadence, replace with:  cron('H H(0-6) * * 1').
-        cron('''0 0,5,10,15,20 * * *
-30 2,7,12,17,22 * * *''')
+        // ── Cadence: weekly. `H` hashes the exact minute + hour within the window
+        //    so the (long, fresh-rebuild) build lands at a stable off-peak time
+        //    early Monday (hour 0-6) rather than a thundering-herd midnight.
+        cron('H H(0-6) * * 1')
     }
     definition {
         cps {

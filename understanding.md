@@ -291,16 +291,21 @@ catches this. Each scheduled run (`ci/run_ci.sh`):
   | `cmp_zendnn-prev_to_zendnn-curr_<TS>.csv` | zendnn_prev → zendnn_curr | **ZenDNN drift across time** (the regression watch) |
   | `cmp_ggml-curr_to_zendnn-curr_<TS>.csv`   | ggml_curr → zendnn_curr   | backend effect, this build (the live A/B) |
 
-  Every CSV has the **same fixed columns**, and carries **one row per (model,
-  question)** — all swept models in the one file, distinguished by the first column:
-  `chat_model_name`, `question`, `accuracy_prev`/`accuracy_curr` (`correct`/`incorrect`)
-  + `accuracy_tag`, `prompt_size`, `prefill_tps_prev`/`_curr`/`_delta_percentage` +
-  `prefill_perf_tag`, `decode_token_size`, `decode_tps_prev`/`_curr`/`_delta_percentage`
-  + `decode_perf_tag`. The delta is a plain percent change, `(curr − prev) / prev × 100`
-  (positive = the right side is faster); a question that flipped **correct→incorrect**
-  is tagged `DEGRADED`. Throughput tags are `SPEEDUP`/`NEUTRAL`/`DEGRADE` against
-  `CI_CMP_THRESHOLD_PCT`. On the very first run the across-time CSVs are empty (no
-  previous run yet); the within-run A/B (`ggml_curr → zendnn_curr`) is always populated.
+  Each CSV opens with a **heading row** stating what it compares, then a header row
+  with **self-describing columns** (value columns suffixed by their dataset, e.g.
+  `prefill_tps_curr_ggml` vs `prefill_tps_curr_zendnn`), then **one row per (model,
+  question)** — all swept models in the one file, keyed by `chat_model_name`. Columns:
+  `chat_model_name`, `question`, `accuracy_<L>`/`accuracy_<R>` (`correct`/`incorrect`)
+  + `accuracy_tag`, `prompt_size`, `prefill_tps_<L>`/`<R>`/`_delta_percentage` +
+  `prefill_perf_tag`, `decode_token_size`, `decode_tps_<L>`/`<R>`/`_delta_percentage`
+  + `decode_perf_tag`, and `e2e_total_s_<L>`/`<R>`/`_delta_percentage` + `e2e_latency_tag`
+  — the **end-to-end wall time per query** in seconds (request→last token). The delta
+  is a plain percent change, `(curr − prev) / prev × 100`. For the two throughput
+  metrics positive = the right side is faster (tag `SPEEDUP`/`NEUTRAL`/`DEGRADE`);
+  `e2e_total_s` is **latency** so its tag is inverted (a *negative* delta = faster =
+  `SPEEDUP`). A question that flipped **correct→incorrect** is tagged `DEGRADED`. Tags
+  fire at `CI_CMP_THRESHOLD_PCT`. On the very first run the across-time CSVs are empty
+  (no previous run yet); the within-run A/B (`ggml_curr → zendnn_curr`) is always populated.
 
 **Where everything lives — `CI_ARTIFACT_DIR`.** *Everything* persistent lives under
 one configurable root (default `<repo>/ci`), bind-mounted into the Jenkins container
@@ -332,10 +337,10 @@ run reads it to find what to compare against, then overwrites it to point at its
 — so the next run sees this one as its baseline. All kept filenames carry the
 `<TS>` timestamp so historical runs never collide.
 
-**Schedule:** the job runs on a **30-minute test cron** (`H/30 * * * *`) defined in
-`docker/jenkins/seed_job.groovy`. For production, switch to weekly
-(`H H(0-6) * * 1`). Concurrent builds are disabled (a run can outlast the cron, and
-two runs would fight over the benchmark containers).
+**Schedule:** the job runs on a **weekly cron** (`H H(0-6) * * 1` — early Monday,
+minute/hour hashed within hour 0-6) defined in `docker/jenkins/seed_job.groovy`.
+Concurrent builds are disabled (a run can outlast the cron, and two runs would
+fight over the benchmark containers).
 
 ---
 
@@ -381,7 +386,7 @@ substitution). Nothing is hardcoded.
 | `CI_EVAL_LIMIT` | `10` | queries per backend per model in a CI run |
 | `CI_CMP_THRESHOLD_PCT` | `5` | ±% that counts as SPEEDUP/DEGRADE |
 | `CI_ARTIFACT_DIR` | `<repo>/ci` | single root for ALL persistent CI state — runs/history/reports **and** `jenkins_home/` (UI build history); no named volumes. Repoint to fully isolate/reset history (UI + comparison both follow it) |
-| Jenkins cron | `H/30 * * * *` | every 30 min (testing cadence) |
+| Jenkins cron | `H H(0-6) * * 1` | weekly, early Monday (hashed within hour 0-6) |
 
 ### Hardware pinning (NUMA)
 The deployment box is a **2-socket AMD EPYC 9R14** (node 0 = CPUs 0–95, node 1 =

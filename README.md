@@ -286,7 +286,7 @@ make ingest                 # ingest the corpus once
 # 3. start the Jenkins controller (builds the image the first time)
 make jenkins-up             # → http://localhost:8088   (admin / admin)
 
-# 4. done. The "zendnn-regression-watch" job runs automatically every 2.5h.
+# 4. done. The "zendnn-regression-watch" job runs automatically once a week.
 #    To run immediately instead of waiting for the schedule, click "Build Now".
 ```
 
@@ -325,7 +325,10 @@ keep the questions the judge marks correct, and overwrite both files.
 
 The four CSVs each have a heading row (what it compares) + self-describing columns
 suffixed by their dataset (`prefill_tps_curr_ggml` vs `prefill_tps_curr_zendnn`,
-and likewise for `decode_tps_*` / `accuracy_*`), one row per (model, question):
+and likewise for `decode_tps_*`, `accuracy_*`, and `e2e_total_s_*` — the
+**end-to-end wall time per query** in seconds, request→last token), one row per
+(model, question). The `e2e_total_s_*` columns are latency (lower is better), so
+their `e2e_latency_tag` treats a negative delta as a SPEEDUP:
 
 | CSV | Compares |
 |---|---|
@@ -360,18 +363,11 @@ the old directory's runs never appear and are never compared against.
 (`reports/` and `data/results/` are never touched.)
 
 **Schedule.** The job is created automatically by Jenkins Configuration-as-Code
-(`docker/jenkins/casc.yaml` → `seed_job.groovy`) with a cron of **every 2.5 hours**
-(00:00, 02:30, 05:00, … 22:30). 2.5h can't be one cron step, so two lines tile the
-day:
-
-```
-0 0,5,10,15,20 * * *
-30 2,7,12,17,22 * * *
-```
-
-For a weekly cadence, change that trigger to `H H(0-6) * * 1`. `disableConcurrentBuilds()`
-queues a tick if a run is still going. Multi-model runs are **not gated** — verdicts
-are informational, so a regression never marks the build red/UNSTABLE.
+(`docker/jenkins/casc.yaml` → `seed_job.groovy`) with a **weekly** cron
+(`H H(0-6) * * 1` — early Monday, exact minute/hour hashed within hour 0-6 so the
+long fresh-rebuild lands off-peak). `disableConcurrentBuilds()` queues a tick if a
+run is still going. Multi-model runs are **not gated** — verdicts are
+informational, so a regression never marks the build red/UNSTABLE.
 
 **How it reaches Docker.** The Jenkins container (`docker-compose.jenkins.yml`, its
 own `nqrag-ci` compose project) mounts the host `docker.sock` and bind-mounts the
