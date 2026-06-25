@@ -52,7 +52,8 @@ make report                 # write results/report.md + results/report.json
 ```
 data/
   docs/                 ingested document files
-  eval.jsonl            questions + reference answers
+  eval.jsonl            questions + reference answers (curated to the stable 10 for CI)
+  eval_stable10.jsonl   the 10 always-correct CI questions (version-controlled)
   ingest_metadata.json  ingestion status / failures
   results/
     metrics.jsonl       one structured record per query
@@ -258,67 +259,128 @@ A/B report is in [`reports/`](reports/).
 
 llama.cpp and ZenDNN are moving open-source repos. A rebuild from latest source
 can quietly make the ZenDNN backend faster **or slower** than it was last week.
-This CI catches that: on a schedule it does a **fresh-pull rebuild**, re-runs the
-standard eval, and compares **this** ZenDNN run against the **previous** ZenDNN
-run — *strictly ZenDNN→ZenDNN across time* — and reports **degrade / neutral /
-speedup**. (The baseline column of each A/B report is only used for the in-run
-A/B; it is not what the watchdog tracks.)
+This CI catches that: on a schedule it does a **fresh-pull rebuild** of both
+backends, then for **every model** in `CHAT_MODELS_DIR` runs a full
+baseline-vs-ZenDNN A/B over a fixed set of **10 always-correct questions**, and
+emits per-(model, question) comparison CSVs plus per-model verdicts.
+
+### Hands-off mode — set up once, Jenkins runs everything
+
+Do the one-time setup, then the controller drives the whole regression watch on a
+schedule. You never run the eval by hand after this.
 
 ```bash
-# one cycle by hand (same logic Jenkins runs):
-make ci                         # FRESH_BUILD=0 bash ci/run_ci.sh  → quick wiring test
-FRESH_BUILD=1 make ci           # full fresh-pull rebuild + eval + compare
+# 1. one-time config
+cp .env.example .env
+#    set in .env:  MODELS_DIR, EMBED_MODEL_PATH, NUMA/threads,
+#                  CHAT_MODELS_DIR  = dir of chat GGUFs (or symlinks) to sweep,
+#                  CI_ARTIFACT_DIR  = where ALL run history + Jenkins state lives,
+#                  CI_EVAL_LIMIT=10 = questions per model per run.
 
-# or run the scheduler:
-make jenkins-up                 # build + start the Jenkins controller
-# open http://localhost:8088  (admin / admin)  → job "zendnn-regression-watch"
+# 2. one-time: bring the stack up + ingest the corpus ONCE. Jenkins reuses this
+#    corpus on every run (it never re-ingests), so documents/retrieval stay
+#    identical across time — only the rebuilt backend changes.
+./setup.sh                  # start stack + seed AnythingLLM
+make ingest                 # ingest the corpus once
+
+# 3. start the Jenkins controller (builds the image the first time)
+make jenkins-up             # → http://localhost:8088   (admin / admin)
+
+# 4. done. The "zendnn-regression-watch" job runs automatically every 2.5h.
+#    To run immediately instead of waiting for the schedule, click "Build Now".
 ```
 
-**What a run does** (`ci/run_ci.sh`):
+After this, every run (scheduled or manual) prunes orphans, rebuilds the images
+from latest source, sweeps each model, and writes results under `CI_ARTIFACT_DIR`
+— no further action. The benchmark stack need not stay up between runs; Jenkins
+brings the containers it needs up and down itself.
 
-1. **Fresh pull** — `scripts/build_llama.sh --no-cache` re-clones latest
-   llama.cpp `HEAD` and re-fetches public ZenDNN, rebuilding both images
-   (`FRESH_BUILD=1`, the scheduled default). The exact llama.cpp commit is
-   recorded with each result.
-2. **Reuse the ingested corpus** — it does **not** re-ingest, so documents and
-   retrieval are identical across time and the only thing that changed is the
-   rebuilt backend. (It ingests once only if no corpus exists yet.)
-3. **Eval** — runs `run_ab.sh` over `CI_EVAL_LIMIT` queries (default **10**) per
-   backend.
-4. **Compare** — `ci/compare_zendnn.py` extracts the ZenDNN throughput
-   (`prefill_tps`, `decode_tps`) and latency metrics, diffs them against the
-   previous run in `ci/history/zendnn_history.jsonl`, and writes a verdict.
+### The 10 always-correct questions
 
-Verdict is decided on the headline throughput metrics against
-`CI_CMP_THRESHOLD_PCT` (default ±5 %): improvement ≥ threshold → **SPEEDUP**,
-regression ≥ threshold → **DEGRADE** (a degrade in either headline metric wins),
-else **NEUTRAL**. The first run has nothing to compare against and is recorded as
-the **BASELINE**.
+To stop accuracy from adding noise, the CI does **not** eval arbitrary questions:
+`data/eval.jsonl` is curated to **10 questions a competent model answers correctly
+every time** — version-controlled as
+[`data/eval_stable10.jsonl`](data/eval_stable10.jsonl) so they are reproducible on
+a fresh clone. With accuracy held constant, an `accuracy_tag` flip to `DEGRADED`
+becomes a *real* signal (e.g. a backend emitting garbage) instead of just a hard
+question. To re-derive after changing the corpus: `EVAL_LIMIT=30 make evaluate`,
+keep the questions the judge marks correct, and overwrite both files.
 
-**Outputs** (all under `ci/`, git-ignored — `reports/` and `data/results/` are
-never touched):
+### What a run does (`ci/run_ci.sh`)
+
+1. **Prune + fresh pull** — removes orphan images, then (`FRESH_BUILD=1`, the
+   scheduled default) re-clones latest llama.cpp `HEAD` + public ZenDNN and
+   rebuilds both images. The exact llama.cpp commit is recorded with each result.
+2. **Reuse the ingested corpus** — never re-ingests (ingests once only if no
+   corpus exists), so retrieval is identical across time.
+3. **Multi-model sweep** — for each model in `CHAT_MODELS_DIR` (symlinks resolved
+   to their real path under `MODELS_DIR`; missing/unresolved → hard error, no
+   silent fallback), swaps in that chat model and runs `run_ab.sh` baseline vs
+   ZenDNN over `CI_EVAL_LIMIT` (=10) questions.
+4. **Compare** — `ci/compare_rows.py` merges every model's per-question metrics
+   and writes **four** comparison CSVs (below). `ci/compare_zendnn.py` also
+   records a per-model across-time verdict (SPEEDUP / NEUTRAL / DEGRADE vs the
+   previous run, against `CI_CMP_THRESHOLD_PCT`, default ±5 %). Verdicts are
+   **per-model and informational — the build is never gated.**
+
+The four CSVs each have a heading row (what it compares) + self-describing columns
+suffixed by their dataset (`prefill_tps_curr_ggml` vs `prefill_tps_curr_zendnn`,
+and likewise for `decode_tps_*` / `accuracy_*`), one row per (model, question):
+
+| CSV | Compares |
+|---|---|
+| `cmp_ggml-curr_to_zendnn-curr_<ts>.csv` | baseline vs ZenDNN, **this** run (the live A/B) |
+| `cmp_ggml-prev_to_ggml-curr_<ts>.csv` | baseline across time (drift) |
+| `cmp_zendnn-prev_to_zendnn-curr_<ts>.csv` | ZenDNN across time (the regression watch) |
+| `cmp_ggml-prev_to_zendnn-prev_<ts>.csv` | baseline vs ZenDNN, **previous** run |
+
+The `prev_*` columns come from a persistent pointer (`history/prev_run.json`); the
+first run after history is cleared has no previous run, so they read `n/a` —
+expected, not a bug.
+
+### Where everything lives (`CI_ARTIFACT_DIR`)
+
+**All** persistent CI state lives under one configurable root (default `<repo>/ci`):
+the run artifacts **and** the Jenkins controller home (`jenkins_home/` — UI build
+history, console logs, archived artifacts, job config). There are **no
+docker-managed named volumes**, so this directory is the single source of truth.
+Repoint `CI_ARTIFACT_DIR` at a fresh directory and restart for **total
+isolation** — Jenkins boots an empty UI, the pipeline starts from BASELINE, and
+the old directory's runs never appear and are never compared against.
 
 | Path | What |
 |---|---|
-| `ci/runs/<ts>/verdict.md` | per-run comparison table (throughput / latency / quality) |
-| `ci/runs/<ts>/verdict.txt` | one-line machine verdict, e.g. `DEGRADE prefill_tps -8.3%` |
-| `ci/runs/<ts>/report_ab.{md,json}` | the A/B report snapshot for that run |
-| `ci/runs/latest/` | copy of the most recent run (Jenkins archives this) |
-| `ci/history/zendnn_history.jsonl` | one line per run — the across-time series |
+| `$CI_ARTIFACT_DIR/runs/<ts>/cmp_*_<ts>.csv` | the four comparison CSVs (all models) |
+| `$CI_ARTIFACT_DIR/runs/<ts>/report_ab_<model>_<ts>.{md,json}` | per-model A/B report |
+| `$CI_ARTIFACT_DIR/runs/<ts>/verdict.{md,txt}` | combined + per-model verdicts |
+| `$CI_ARTIFACT_DIR/runs/latest/` | copy of the most recent run (Jenkins archives this) |
+| `$CI_ARTIFACT_DIR/history/prev_run.json` | pointer to the previous run (drives the `prev_*` columns) |
+| `$CI_ARTIFACT_DIR/jenkins_home/` | Jenkins controller home (UI history / logs / job config) |
+
+(`reports/` and `data/results/` are never touched.)
 
 **Schedule.** The job is created automatically by Jenkins Configuration-as-Code
-(`docker/jenkins/casc.yaml`) with a **testing cron of every 30 minutes**
-(`H/30 * * * *`). For the real weekly cadence, change that trigger to
-`H H(0-6) * * 1` (≈ weekly, early Monday) and rebuild the image / re-up. A
-DEGRADE marks the build **UNSTABLE** (yellow); set `CI_FAIL_ON_DEGRADE=1` to fail
-it red instead.
+(`docker/jenkins/casc.yaml` → `seed_job.groovy`) with a cron of **every 2.5 hours**
+(00:00, 02:30, 05:00, … 22:30). 2.5h can't be one cron step, so two lines tile the
+day:
 
-**How it reaches Docker.** The Jenkins container (`docker-compose.jenkins.yml`,
-its own `nqrag-ci` compose project) mounts the host `docker.sock` and bind-mounts
-the repo at the **same absolute path** as the host (`PROJECT_DIR`) — required, so
-the benchmark containers it launches resolve their bind mounts on the host
-filesystem. Config knobs live in `.env` (`PROJECT_DIR`, `JENKINS_PORT`,
-`JENKINS_CPUSET`, `CI_EVAL_LIMIT`, `CI_CMP_THRESHOLD_PCT`, admin creds).
+```
+0 0,5,10,15,20 * * *
+30 2,7,12,17,22 * * *
+```
+
+For a weekly cadence, change that trigger to `H H(0-6) * * 1`. `disableConcurrentBuilds()`
+queues a tick if a run is still going. Multi-model runs are **not gated** — verdicts
+are informational, so a regression never marks the build red/UNSTABLE.
+
+**How it reaches Docker.** The Jenkins container (`docker-compose.jenkins.yml`, its
+own `nqrag-ci` compose project) mounts the host `docker.sock` and bind-mounts the
+repo — plus `CI_ARTIFACT_DIR`, `CHAT_MODELS_DIR`, and `MODELS_DIR` — at the **same
+absolute path** as the host, so the benchmark containers it launches resolve their
+bind mounts on the host filesystem and Jenkins keeps 100 % of its state in
+`CI_ARTIFACT_DIR`. Required config in `.env`: `PROJECT_DIR`, `CHAT_MODELS_DIR`,
+`MODELS_DIR`, `CI_ARTIFACT_DIR`, plus `JENKINS_PORT`, `JENKINS_CPUSET`,
+`CI_EVAL_LIMIT`, `CI_CMP_THRESHOLD_PCT`, and admin creds.
 
 ## Dataset notes
 

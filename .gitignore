@@ -1,8 +1,11 @@
 # local config (copy of .env.example, may contain generated ALLM_KEY)
 .env
 
-# generated data + results
-data/
+# generated data + results. Everything under data/ is runtime output and stays
+# untracked EXCEPT the curated stable eval set, which is version-controlled so the
+# 10 always-correct CI questions are reproducible on a fresh clone.
+data/*
+!data/eval_stable10.jsonl
 models/
 
 # python

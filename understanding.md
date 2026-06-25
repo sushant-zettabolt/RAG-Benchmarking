@@ -158,6 +158,17 @@ read straight from `llama.cpp`'s own Prometheus counters**, not estimated.
    contexts) and their golden answers come from `all_answers`. The contexts that
    answer the eval questions are guaranteed to be in the corpus (so every question
    is answerable).
+   - **Curated stable set for CI.** Some of the 100 are not answerable by any
+     model (the supporting fact isn't in the retrieved chunk), which would make
+     `accuracy_tag` flip for reasons unrelated to the backend. So for the Jenkins
+     regression watch, `data/eval.jsonl` is curated to **10 questions a competent
+     model answers correctly every time** (version-controlled as
+     `data/eval_stable10.jsonl`). With accuracy held constant the only moving
+     signal is performance, and a `DEGRADED` flip becomes meaningful (e.g. a
+     backend producing garbage). Re-derive with `EVAL_LIMIT=30 make evaluate`,
+     keep the judge-correct questions, and overwrite both files. `evaluate.py`
+     reads the first `EVAL_LIMIT` rows of `data/eval.jsonl`, so a curated 10-row
+     file + `CI_EVAL_LIMIT=10` runs exactly those 10.
 5. **Embed + store.** `bulk_ingest.py` embeds all chunks in parallel and writes
    them into the `squad-bench` LanceDB table. For the one-time ingest the system
    spins up **32 data-parallel embed instances × 12 threads** (= all 384 logical
