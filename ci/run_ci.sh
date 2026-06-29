@@ -27,7 +27,7 @@
 #   CHAT_MODELS_DIR          REQUIRED — dir of chat GGUFs to sweep (no fallback)
 #   CI_ARTIFACT_DIR          where all artifacts/history live (default <repo>/ci)
 #   FRESH_BUILD=1|0          rebuild images no-cache first (default 1)
-#   CI_EVAL_LIMIT=N          queries per backend per model (default 10)
+#   CI_EVAL_LIMIT=N          queries per backend per model (default 100)
 #   CI_CMP_THRESHOLD_PCT=5   % change that counts as speedup/degrade (default 5)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -38,7 +38,7 @@ log() { echo "[ci $(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 die() { echo "[ci] ERROR: $*" >&2; exit 1; }
 
 FRESH_BUILD="${FRESH_BUILD:-1}"
-CI_EVAL_LIMIT="${CI_EVAL_LIMIT:-10}"
+CI_EVAL_LIMIT="${CI_EVAL_LIMIT:-100}"
 CI_CMP_THRESHOLD_PCT="${CI_CMP_THRESHOLD_PCT:-5}"
 TS="$(date '+%Y%m%d_%H%M%S')"
 

@@ -2,15 +2,22 @@
 .env
 
 # generated data + results. Everything under data/ is runtime output and stays
-# untracked EXCEPT the curated stable eval set, which is version-controlled so the
-# 10 always-correct CI questions are reproducible on a fresh clone.
+# untracked EXCEPT the curated eval sets, which are version-controlled so the
+# always-correct CI questions are reproducible on a fresh clone:
+#   eval_correct100.jsonl = the 100-question default set (active eval)
+#   eval_stable10.jsonl   = the original 10-question set (kept for quick runs)
 data/*
+!data/eval_correct100.jsonl
 !data/eval_stable10.jsonl
 models/
 
 # python
 __pycache__/
 *.pyc
+
+# benchmark report output (regenerated each run; archived under ../rag_bench_artifacts).
+# Was tracked previously — now untracked so report churn stays out of the repo.
+reports/
 
 # CI runtime artifacts (Jenkins regression watch): per-run snapshots, history,
 # archived reports, and the Jenkins controller home (build history/console logs/
@@ -42,3 +49,4 @@ llama.cpp/
 third_party/
 *.log
 *.pid
+ci_100q/

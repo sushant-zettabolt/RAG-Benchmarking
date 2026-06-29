@@ -21,7 +21,7 @@ help:
 	@echo "  make build-llama  build llama.cpp backend IMAGES (baseline + zendnn) from source for the A/B"
 	@echo "  make ab           ZenDNN A/B: baseline vs zendnn (sequential) + report"
 	@echo "  make ci           run ONE regression-watch cycle now (rebuild+eval+compare)"
-	@echo "  make jenkins-up   build + start the Jenkins CI controller (cron: zendnn watch)"
+	@echo "  make jenkins-up   build + start the Jenkins CI controller (weekly cron: zendnn watch)"
 	@echo "  make jenkins-down | jenkins-logs    Jenkins lifecycle"
 	@echo "  make up | down | logs | ps    stack lifecycle"
 	@echo "  make save-images / load-images   export/import images for git-lfs"

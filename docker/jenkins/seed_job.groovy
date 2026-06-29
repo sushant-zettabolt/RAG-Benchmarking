@@ -1,7 +1,7 @@
 // Job DSL seed for the ZenDNN regression watch, applied by JCasC at boot
 // (casc.yaml -> jobs: -> file). Creates one cron pipeline job that runs the CI.
 pipelineJob('zendnn-regression-watch') {
-    description('Cron-scheduled fresh-pull rebuild of llama.cpp + ZenDNN, standard RAG eval, then a strictly ZenDNN->ZenDNN-across-time comparison (degrade / neutral / speedup). Testing cron is every 30 min; switch the trigger to weekly for production.')
+    description('Cron-scheduled fresh-pull rebuild of llama.cpp + ZenDNN, standard RAG eval, then a strictly ZenDNN->ZenDNN-across-time comparison (degrade / neutral / speedup). Cron fires weekly (early Monday, hour 0-6, hashed minute).')
     keepDependencies(false)
     parameters {
         booleanParam('FRESH_BUILD', true, 'Rebuild baseline + ZenDNN images --no-cache (fresh pull of latest llama.cpp HEAD + public ZenDNN) before the eval. Scheduled runs leave this true; turn it off for a quick wiring test.')
@@ -20,9 +20,16 @@ pipelineJob('zendnn-regression-watch') {
         cps {
             sandbox(true)
             script('''
-// Never run two cycles at once: a fresh-pull rebuild + eval can outlast the
-// 30-min test cron, and concurrent runs would fight over the benchmark containers.
-properties([disableConcurrentBuilds()])
+// Re-assert BOTH the concurrency rule and the cron on every run. `properties()`
+// REPLACES the job's whole property set, so listing only disableConcurrentBuilds()
+// here would wipe the cron trigger the Job DSL set above after the first build
+// (a silent bug). Declaring the cron here too makes it self-healing — every build
+// re-registers it. Keep this spec identical to the DSL `triggers{cron(...)}`.
+//   weekly: fires early Monday (hour 0-6), minute+hour hashed from the job name.
+properties([
+    disableConcurrentBuilds(),
+    pipelineTriggers([cron('H H(0-6) * * 1')])
+])
 node {
     def proj = env.PROJECT_DIR ?: '/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench'
     // All artifacts + history live here (repoint to reset history). Default: <proj>/ci.

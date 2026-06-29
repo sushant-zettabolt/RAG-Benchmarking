@@ -49,6 +49,8 @@ services:
       # Publish stage reads the verdict + archives from it — so repointing this var
       # makes the Jenkins UI reflect a different history. Bind-mounted below.
       CI_ARTIFACT_DIR: ${CI_ARTIFACT_DIR:-${PROJECT_DIR:-/home/zettabolt/mkumar/sushant/RAG_testing/rag_pipeline_bench}/ci}
+      # Queries per backend per model that run_ci.sh evaluates (sliced from eval.jsonl).
+      CI_EVAL_LIMIT: ${CI_EVAL_LIMIT:-100}
       # Models swept by the CI (run_ci.sh enumerates + dereferences these).
       CHAT_MODELS_DIR: ${CHAT_MODELS_DIR:?set CHAT_MODELS_DIR in .env to the dir of chat GGUFs to sweep}
       MODELS_DIR: ${MODELS_DIR:?set MODELS_DIR in .env}
