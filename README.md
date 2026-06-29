@@ -5,6 +5,32 @@ Docker — including the LLM and embedding servers — so the only host requirem
 is **Docker + Docker Compose**. One `docker compose up` starts the stack; three
 commands ingest Google Natural Questions, evaluate, and produce a report.
 
+> **New here?** Follow [`step.md`](step.md) — a detailed, beginner-friendly
+> walkthrough that sets the stack up on your machine one step at a time.
+
+## Summary
+
+This project is a **reproducible Retrieval-Augmented-Generation (RAG) evaluation
+harness** built to **benchmark a CPU LLM-inference backend** — in particular to
+measure the effect of AMD's **ZenDNN** acceleration for `llama.cpp` against a plain
+build, across a *complete, realistic* RAG pipeline (embed a query → vector search →
+build a prompt → generate an answer → grade it).
+
+- **Everything is containerized:** the chat LLM server, the embedding server, the RAG
+  app (AnythingLLM + LanceDB), an OpenAI-compatible proxy (LiteLLM), the metrics stack
+  (Prometheus/Grafana), and an optional Jenkins CI controller.
+- **The numbers are trustworthy by construction:** the model, documents, and questions
+  are held identical across the A/B, and per-query timings are read straight from
+  `llama.cpp`'s own Prometheus counters rather than estimated.
+- **What you get:** per-query and aggregate latency/throughput + accuracy reports for a
+  single backend, a baseline-vs-ZenDNN A/B report, and an optional scheduled regression
+  watch that rebuilds from latest source and flags performance/accuracy drift over time.
+- **What you supply:** Docker and your own model files (GGUF). Models are never
+  downloaded. The dataset is fetched automatically on first ingest.
+
+For the architecture and design rationale see [`DOC.md`](DOC.md); for the exact prompts,
+judge configuration, and runtime knobs see [`info.md`](info.md).
+
 > **No Docker on your machine?** There's a side-by-side, **Docker-free** twin of
 > this whole stack under [`native/`](native/) — every service runs as a plain
 > user process (no Docker, no sudo, no root), with the same few-command flow
@@ -52,8 +78,9 @@ make report                 # write results/report.md + results/report.json
 ```
 data/
   docs/                 ingested document files
-  eval.jsonl            questions + reference answers (curated to the stable 10 for CI)
-  eval_stable10.jsonl   the 10 always-correct CI questions (version-controlled)
+  eval.jsonl            questions + reference answers (the active eval set)
+  eval_correct100.jsonl 100 always-correct CI questions — the default (version-controlled)
+  eval_stable10.jsonl   smaller 10-question set, kept for quick runs (version-controlled)
   ingest_metadata.json  ingestion status / failures
   results/
     metrics.jsonl       one structured record per query
@@ -61,8 +88,6 @@ data/
     report.md           human-readable report
     report.json         machine-readable report
 ```
-
-A pre-generated example lives in [`reports/`](reports/).
 
 ## Quick start (no Docker / bare metal)
 
@@ -120,9 +145,9 @@ Put the chat + embedding GGUFs in one host folder, point `MODELS_DIR` at it, and
 set `CHAT_MODEL_PATH` / `EMBED_MODEL_PATH` to their paths under `/models`:
 
 ```dotenv
-MODELS_DIR=/scratch/models/gguf
-CHAT_MODEL_PATH=/models/Llama-3.1-8B-Instruct-BF16.gguf
-EMBED_MODEL_PATH=/models/nomic-embed-text-v1.5.f32.gguf
+MODELS_DIR=/path/to/your/gguf-models
+CHAT_MODEL_PATH=/models/<your-chat-model>.gguf
+EMBED_MODEL_PATH=/models/<your-embedding-model>.gguf
 ```
 
 The `llama-chat` / `llama-embed` containers exit immediately with a clear error
@@ -150,7 +175,8 @@ this is optional — leave the variables empty for no pinning (the portable defa
 | `LITELLM_CPUSET` / `ALLM_CPUSET` / `PROM_CPUSET` / `HARNESS_CPUSET` | Same, for the support services |
 | `CHAT_MEMBIND` / `EMBED_MEMBIND` | NUMA **memory** node for the llama servers (e.g. `1` / `0`) |
 
-Example for a 2×96-core EPYC (node 0 = cpus `0-95`, node 1 = cpus `96-191`):
+Example for a generic 2-socket box with 96 cores per socket (node 0 = cpus `0-95`,
+node 1 = cpus `96-191`) — adjust the ranges to your own `lscpu` topology:
 
 ```dotenv
 CHAT_CPUSET=96-191    # chat owns all of node 1 …
@@ -252,8 +278,8 @@ How the two backends are selected (configurable in `.env`):
 Each job sets `CHAT_IMAGE` and recreates only `llama-chat`
 (`docker-compose.ab.yml`) — so baseline and zendnn differ only in the llama.cpp
 backend baked into the image. `CHAT_MODEL_PATH` must point at a local GGUF (the
-A/B uses your real model, since ZenDNN targets matmul-bound prefill). A sample
-A/B report is in [`reports/`](reports/).
+A/B uses your real model, since ZenDNN targets matmul-bound prefill). The report
+is written to `data/results/report_ab.{md,json}`.
 
 ## ZenDNN regression watch (Jenkins CI)
 
@@ -261,7 +287,7 @@ llama.cpp and ZenDNN are moving open-source repos. A rebuild from latest source
 can quietly make the ZenDNN backend faster **or slower** than it was last week.
 This CI catches that: on a schedule it does a **fresh-pull rebuild** of both
 backends, then for **every model** in `CHAT_MODELS_DIR` runs a full
-baseline-vs-ZenDNN A/B over a fixed set of **10 always-correct questions**, and
+baseline-vs-ZenDNN A/B over a fixed set of **100 always-correct questions**, and
 emits per-(model, question) comparison CSVs plus per-model verdicts.
 
 ### Hands-off mode — set up once, Jenkins runs everything
@@ -275,7 +301,7 @@ cp .env.example .env
 #    set in .env:  MODELS_DIR, EMBED_MODEL_PATH, NUMA/threads,
 #                  CHAT_MODELS_DIR  = dir of chat GGUFs (or symlinks) to sweep,
 #                  CI_ARTIFACT_DIR  = where ALL run history + Jenkins state lives,
-#                  CI_EVAL_LIMIT=10 = questions per model per run.
+#                  CI_EVAL_LIMIT=100 = questions per model per run.
 
 # 2. one-time: bring the stack up + ingest the corpus ONCE. Jenkins reuses this
 #    corpus on every run (it never re-ingests), so documents/retrieval stay
@@ -295,16 +321,18 @@ from latest source, sweeps each model, and writes results under `CI_ARTIFACT_DIR
 — no further action. The benchmark stack need not stay up between runs; Jenkins
 brings the containers it needs up and down itself.
 
-### The 10 always-correct questions
+### The always-correct question set
 
 To stop accuracy from adding noise, the CI does **not** eval arbitrary questions:
-`data/eval.jsonl` is curated to **10 questions a competent model answers correctly
-every time** — version-controlled as
-[`data/eval_stable10.jsonl`](data/eval_stable10.jsonl) so they are reproducible on
-a fresh clone. With accuracy held constant, an `accuracy_tag` flip to `DEGRADED`
-becomes a *real* signal (e.g. a backend emitting garbage) instead of just a hard
-question. To re-derive after changing the corpus: `EVAL_LIMIT=30 make evaluate`,
-keep the questions the judge marks correct, and overwrite both files.
+it runs only questions a competent model answers correctly every time. Two such
+sets are version-controlled so they are reproducible on a fresh clone —
+[`data/eval_correct100.jsonl`](data/eval_correct100.jsonl) (**100 questions, the
+default**) and [`data/eval_stable10.jsonl`](data/eval_stable10.jsonl) (a smaller
+10-question set for quick runs). With accuracy held constant, an `accuracy_tag`
+flip to `DEGRADED` becomes a *real* signal (e.g. a backend emitting garbage)
+instead of just a hard question. To re-derive after changing the corpus:
+`EVAL_LIMIT=200 make evaluate`, keep the questions the judge marks correct, and
+overwrite the set.
 
 ### What a run does (`ci/run_ci.sh`)
 
@@ -316,7 +344,7 @@ keep the questions the judge marks correct, and overwrite both files.
 3. **Multi-model sweep** — for each model in `CHAT_MODELS_DIR` (symlinks resolved
    to their real path under `MODELS_DIR`; missing/unresolved → hard error, no
    silent fallback), swaps in that chat model and runs `run_ab.sh` baseline vs
-   ZenDNN over `CI_EVAL_LIMIT` (=10) questions.
+   ZenDNN over `CI_EVAL_LIMIT` (=100) questions.
 4. **Compare** — `ci/compare_rows.py` merges every model's per-question metrics
    and writes **four** comparison CSVs (below). `ci/compare_zendnn.py` also
    records a per-model across-time verdict (SPEEDUP / NEUTRAL / DEGRADE vs the
@@ -360,7 +388,7 @@ the old directory's runs never appear and are never compared against.
 | `$CI_ARTIFACT_DIR/history/prev_run.json` | pointer to the previous run (drives the `prev_*` columns) |
 | `$CI_ARTIFACT_DIR/jenkins_home/` | Jenkins controller home (UI history / logs / job config) |
 
-(`reports/` and `data/results/` are never touched.)
+(The harness's `data/results/` is never touched.)
 
 **Schedule.** The job is created automatically by Jenkins Configuration-as-Code
 (`docker/jenkins/casc.yaml` → `seed_job.groovy`) with a **weekly** cron

@@ -97,7 +97,7 @@ read straight from `llama.cpp`'s own Prometheus counters**, not estimated.
   the retrieval, prompt assembly, and the chat call. Queried over its REST API.
 - **How:** the harness calls `POST /api/v1/workspace/<SLUG>/stream-chat` in
   **query mode** (answers *only* from retrieved context, no model world-knowledge
-  fallback). Retrieval returns the top **`RETRIEVAL_TOPN` (=5)** chunks above a
+  fallback). Retrieval returns the top **`RETRIEVAL_TOPN` (=15)** chunks above a
   similarity threshold (0.0 = no floor). The vector table is named after the
   workspace **slug** (`squad-bench`) and lives in the `anythingllm-storage` Docker
   volume.
@@ -148,31 +148,33 @@ read straight from `llama.cpp`'s own Prometheus counters**, not estimated.
    `all_answers`.
 2. **Corpus = the `context` fields.** Unique contexts are de-duplicated into
    documents (`doc_NNNNN.txt`). With `DOC_N=0` *all* unique contexts are
-   ingested (~**18,891** documents for this file).
+   ingested (tens of thousands of documents, depending on the source file).
 3. **Chunking is disabled** (`EMBED_NO_SPLIT=1`): each context is short enough
-   (≤ 653 words, ~820 tokens, under the embed context window) to be **one whole
-   chunk**, so retrieval returns complete, coherent passages. The windowed
-   splitter is left intact in code — only bypassed for this corpus.
+   (under the embed context window) to be **one whole chunk**, so retrieval
+   returns complete, coherent passages. The windowed splitter is left intact in
+   code — only bypassed for this corpus.
 4. **Test set = questions + answers.** `EVAL_N=100` questions are sampled
    **evenly across the file** (not the first N — adjacent SQuAD rows share
    contexts) and their golden answers come from `all_answers`. The contexts that
    answer the eval questions are guaranteed to be in the corpus (so every question
    is answerable).
-   - **Curated stable set for CI.** Some of the 100 are not answerable by any
-     model (the supporting fact isn't in the retrieved chunk), which would make
-     `accuracy_tag` flip for reasons unrelated to the backend. So for the Jenkins
-     regression watch, `data/eval.jsonl` is curated to **10 questions a competent
-     model answers correctly every time** (version-controlled as
-     `data/eval_stable10.jsonl`). With accuracy held constant the only moving
-     signal is performance, and a `DEGRADED` flip becomes meaningful (e.g. a
-     backend producing garbage). Re-derive with `EVAL_LIMIT=30 make evaluate`,
-     keep the judge-correct questions, and overwrite both files. `evaluate.py`
-     reads the first `EVAL_LIMIT` rows of `data/eval.jsonl`, so a curated 10-row
-     file + `CI_EVAL_LIMIT=10` runs exactly those 10.
+   - **Curated always-correct set for CI.** Some questions are not answerable by
+     any model (the supporting fact isn't in the retrieved chunk), which would make
+     `accuracy_tag` flip for reasons unrelated to the backend. So the Jenkins
+     regression watch runs only questions a competent model answers correctly every
+     time. Two such sets are version-controlled so they're reproducible on a fresh
+     clone: **`data/eval_correct100.jsonl` (100 questions — the default)** and the
+     smaller **`data/eval_stable10.jsonl` (10 questions)**, kept for quick runs.
+     With accuracy held constant the only moving signal is performance, and a
+     `DEGRADED` flip becomes meaningful (e.g. a backend producing garbage). Re-derive
+     with `EVAL_LIMIT=200 make evaluate`, keep the judge-correct questions, and
+     overwrite the set. `evaluate.py` reads the first `EVAL_LIMIT`/`CI_EVAL_LIMIT`
+     rows of `data/eval.jsonl`, so the 100-row file + `CI_EVAL_LIMIT=100` runs all 100.
 5. **Embed + store.** `bulk_ingest.py` embeds all chunks in parallel and writes
    them into the `squad-bench` LanceDB table. For the one-time ingest the system
-   spins up **32 data-parallel embed instances × 12 threads** (= all 384 logical
-   CPUs on the 2×96-core box), shards the corpus across them, then tears them down.
+   spins up a configurable fleet of **data-parallel embed instances**
+   (`EMBED_INGEST_INSTANCES × EMBED_INGEST_THREADS_PER`, sized to the host's CPU
+   topology), shards the corpus across them, then tears them down.
 
 ### 4.2 Evaluate (measure)
 For each question (run **serially** so metric deltas are uncontaminated):
@@ -180,7 +182,7 @@ For each question (run **serially** so metric deltas are uncontaminated):
    **before** the call.
 2. Call AnythingLLM (`stream-chat`, query mode, a **unique session per query** so
    there's no chat-history carryover). AnythingLLM embeds the question, retrieves
-   top-5 chunks, builds the prompt, and streams the answer.
+   top-15 chunks, builds the prompt, and streams the answer.
 3. Snapshot the counters **after**, and compute the per-stage deltas (§5).
 4. **Judge** the answer with an external LLM-as-judge (after the snapshot, so the
    judge call never pollutes the measured counters).
@@ -261,7 +263,7 @@ catches this. Each scheduled run (`ci/run_ci.sh`):
 3. **Multi-model sweep** — the CI evaluates **every chat model** in `CHAT_MODELS_DIR`
    (a host dir of GGUFs; symlinks are dereferenced to their target under
    `MODELS_DIR`). For each model it swaps `llama-chat` and runs the full A/B
-   (`run_ab.sh`) over `CI_EVAL_LIMIT` (=10) queries per backend. The per-question
+   (`run_ab.sh`) over `CI_EVAL_LIMIT` (=100) queries per backend. The per-question
    metrics of all models are tagged with the model name and merged. `CHAT_MODELS_DIR`
    is **required** — the CI errors out (no single-model fallback) if it is unset/empty.
 4. **Compare** (strictly **ZenDNN→ZenDNN across time**, the baseline column is not
@@ -318,8 +320,8 @@ repointing `CI_ARTIFACT_DIR` at a fresh directory (dir1 → dir2) and restarting
 and history vanish from the UI; and the pipeline finds no `prev_run.json`/
 `zendnn_history`, so it begins from BASELINE and never compares against dir1. JCasC
 (mounted read-only) re-creates the job on every boot, so a fresh home still comes up
-fully configured. Artifacts produced every run (never touching `data/results` or the
-hand-curated `reports/`):
+fully configured. Artifacts produced every run (never touching the harness's
+`data/results`):
 
 | Artifact | What it is |
 |---|---|
@@ -344,20 +346,21 @@ fight over the benchmark containers).
 
 ---
 
-## 8. Parameters you should know (current deployment)
+## 8. Parameters you should know
 
 All configuration is in **`.env`** (Docker stack reads it via Compose
-substitution). Nothing is hardcoded.
+substitution). Nothing is hardcoded. The values below are the typical defaults;
+set paths and host-sized knobs (threads, CPU/NUMA pinning) for your own machine.
 
 ### Models & dataset
 | Param | Value | Meaning |
 |---|---|---|
-| `CHAT_MODEL_PATH` | `Llama-3.1-8B-Instruct-q8_0.gguf` | single chat model for the base stack / manual A/B |
-| `CHAT_MODELS_DIR` | `/scratch/.../symlinks` | dir of chat GGUFs the **CI sweeps** (one A/B per model); required for CI |
-| `EMBED_MODEL_PATH` | `nomic-embed-text-v1.5.f32.gguf` | embedding model (768-dim) |
+| `CHAT_MODEL_PATH` | `/models/<your-chat-model>.gguf` | single chat model for the base stack / manual A/B |
+| `CHAT_MODELS_DIR` | `<dir of chat GGUFs>` | dir of chat GGUFs the **CI sweeps** (one A/B per model); required for CI |
+| `EMBED_MODEL_PATH` | `/models/<your-embedding-model>.gguf` | embedding model (e.g. nomic-embed-text, 768-dim) |
 | `INGEST_SOURCE` / `SLUG` | `squad` / `squad-bench` | dataset mode + LanceDB/workspace name |
 | `EMBED_NO_SPLIT` | `1` | one context = one chunk (no windowing) |
-| `DOC_N` | `0` | ingest ALL unique contexts (~18,891) |
+| `DOC_N` | `0` | ingest ALL unique contexts |
 | `EVAL_N` | `100` | test questions drawn (sampled evenly) |
 | `EVAL_LIMIT` | `10` | of those, how many are actually measured |
 | `WARMUP` | `1` | leading warmup queries, excluded from results |
@@ -366,10 +369,10 @@ substitution). Nothing is hardcoded.
 | Param | Value | Meaning |
 |---|---|---|
 | `CHAT_CTX` | `16384` | chat context window |
-| `CHAT_THREADS` | `96` | one thread per physical core of NUMA node 1 |
+| `CHAT_THREADS` | _(host-sized)_ | typically one thread per physical core of the chat server's NUMA node |
 | `CHAT_NGL` / `EMBED_NGL` | `0` | GPU layers (0 = **CPU-only**) |
 | `EMBED_CTX` | `2048` | embed context window |
-| `RETRIEVAL_TOPN` | `5` | chunks retrieved per query |
+| `RETRIEVAL_TOPN` | `15` | chunks retrieved per query |
 | `EMBED_INGEST_INSTANCES × _THREADS_PER` | `32 × 12` | data-parallel embed fleet for one-time ingest |
 
 ### Judging
@@ -383,17 +386,18 @@ substitution). Nothing is hardcoded.
 |---|---|---|
 | `AB_ZENDNN_ALGO` | `1` | ZenDNN matmul algorithm for the zendnn job |
 | `AB_FIXED_DECODE` | `128` | force exactly 128 decode tokens/query (perf parity) |
-| `CI_EVAL_LIMIT` | `10` | queries per backend per model in a CI run |
+| `CI_EVAL_LIMIT` | `100` | queries per backend per model in a CI run |
 | `CI_CMP_THRESHOLD_PCT` | `5` | ±% that counts as SPEEDUP/DEGRADE |
 | `CI_ARTIFACT_DIR` | `<repo>/ci` | single root for ALL persistent CI state — runs/history/reports **and** `jenkins_home/` (UI build history); no named volumes. Repoint to fully isolate/reset history (UI + comparison both follow it) |
 | Jenkins cron | `H H(0-6) * * 1` | weekly, early Monday (hashed within hour 0-6) |
 
 ### Hardware pinning (NUMA)
-The deployment box is a **2-socket AMD EPYC 9R14** (node 0 = CPUs 0–95, node 1 =
-96–191). Decode is memory-bandwidth-bound, so each service is pinned to a distinct,
-non-overlapping CPU range and the llama servers bind their **memory** to the local
-NUMA node:
-- `llama-chat`: CPUs `96–191`, memory node `1` (owns all of socket 1).
+On a multi-socket (NUMA) box, decode is memory-bandwidth-bound, so each service is
+pinned to a distinct, non-overlapping CPU range and the llama servers bind their
+**memory** to the local NUMA node. All values are set per-host in `.env` (sized to
+your `lscpu` topology); leave them empty for the portable, no-pinning default.
+Example layout for a 2-socket box (node 0 = CPUs `0–95`, node 1 = `96–191`):
+- `llama-chat`: CPUs `96–191`, memory node `1` (owns one whole socket).
 - `llama-embed`: CPUs `0–15`, memory node `0`; support services share node 0.
 - Enforced via Docker `cpuset` (CPUs) + `numactl --membind` (memory, needs the
   `SYS_NICE` capability, already granted).
@@ -409,8 +413,7 @@ chat `8081` · embed `8082` · LiteLLM `4000` · Prometheus `9090` · AnythingLL
 - **CPU-only by design.** The whole point is benchmarking the *CPU* inference path
   (ZenDNN targets AMD CPUs). GPU is not wired up.
 - **`-march=native` images are not portable** across CPU microarchitectures — each
-  host builds its own. Fine here (single benchmark box); don't copy a built image
-  to a different-CPU machine.
+  host builds its own; don't copy a built image to a different-CPU machine.
 - **The A/B is fair by construction:** identical model weights, identical frozen
   corpus, identical questions, both backend images pinned to the same llama.cpp
   commit, jobs run sequentially.
@@ -423,9 +426,11 @@ chat `8081` · embed `8082` · LiteLLM `4000` · Prometheus `9090` · AnythingLL
   freeze a benchmark, pin `LLAMA_CPP_REF`.
 - **Models are never shipped or downloaded** — they're mounted read-only from the
   host; the containers fail fast with a clear error if a model path is wrong.
-- **State that persists in Docker volumes:** the vector DB (`anythingllm-storage`,
-  holds the 18,891-vector `squad-bench` table) and Jenkins config/history
-  (`jenkins-home`). `make down` keeps volumes; `make clean-all` drops them.
+- **State that persists in Docker named volumes:** the vector DB
+  (`anythingllm-storage`, holds the `squad-bench` table) plus
+  `prom-data` / `grafana-data`. `make down` keeps volumes; `make clean-all` drops
+  them. Jenkins state is **not** a named volume — it lives in `jenkins_home/` under
+  the bind-mounted `CI_ARTIFACT_DIR` (see §7).
 - **Two independent stacks share this repo:** the Docker stack (this document) and
   a Docker-free "native" twin under `native/` that runs the same pipeline as plain
   user processes. They never share state.
@@ -439,7 +444,7 @@ chat `8081` · embed `8082` · LiteLLM `4000` · Prometheus `9090` · AnythingLL
 ./setup.sh                 # (or: make up)
 
 # One-time: ingest the corpus into the vector DB
-make ingest                # builds eval set + embeds ~18,891 contexts
+make ingest                # builds eval set + embeds all unique contexts
 
 # Repeatable: measure + report (single backend)
 make evaluate && make report
@@ -460,6 +465,6 @@ make clean | make clean-all            # clean-all drops volumes (vectors, jenki
 
 **Remote access to the Jenkins UI** (from a laptop, over SSH):
 ```bash
-ssh -L 8088:localhost:8088 <user>@<benchmark-box>
+ssh -L 8088:localhost:8088 <user>@<host>
 # then open http://localhost:8088  (admin / admin)
 ```
